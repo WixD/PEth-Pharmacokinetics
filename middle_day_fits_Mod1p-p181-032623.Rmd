@@ -1,0 +1,882 @@
+---
+title: "fitting of PEth Model 1b"
+author: "Ted W. Simon"
+date: "09/05/22"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(message=TRUE, warning=TRUE)
+library(mrgsolve)
+library(magrittr)    # The pipe, %>%
+library(dplyr)
+library(ggplot2)
+library(FME)
+library(minpack.lm)
+library(reshape2)     # Package for melt function to reshape the table
+library(readxl)      # Package to read Excel files
+library(readr)       # read for csv files from tidyverse
+library(pksensi)
+library(pracma)
+
+
+Pmod <- mread("Pcode1switch.cpp")
+mname <- "Mod 1pref"
+```
+
+
+first build observations and do initial sims
+```{r}
+############## choose individual
+idx <- 3
+
+#############
+id <- c("sid2000", "sid2001", "sid2002", "sid2003", "sid2006", "sid2008", "sid2009",
+   "sid2010", "sid2012", "sid2013", "sid2015", "sid2016", "sid2019",
+   "sid2023", "sid2025", "sid2030", "sid2032")
+idnum <- strtoi(substring(id[idx],4))
+print(idnum)
+nom_dose <- c(0.4,0.8,0.4,0.8,0.4,0.8,0.8,0.8,0.4,0.4,0.8,0.8,0.8,0.4,0.8,0.4,0.8)
+
+Pdat <- read.csv("../Obs-PEthdata-081922.csv") |> filter(time<=432)
+amend <- tibble(time = Pdat$time, Pconc2=Pdat[,idx+1])
+obs <- read_xlsx("../New_data-051222.xlsx", sheet=id[idx], col_types=c(rep("text",2), rep("numeric",7), 
+                                                                  "text", "numeric", "text", rep("numeric",11) ),
+                 na="NA")
+
+alc_dat <- obs[1:40,c(4,17)]
+obs_real <- obs[c(1,7,8,9,15,17,23,25,31,33,39,40:44), c(4,7,17,21)] |>
+  dplyr::rename(time=times, Pconc2=Mp181)
+
+if (idx==14) obs_real$Pconc2[14:16] <- amend$Pconc2[23:25]
+day1_real <- obs[1:9,c(4,21)] |>
+  dplyr::rename(time=times, Pconc2=Mp181)
+
+day5_real <- obs[33:40,c(4,17,21,7)] |>
+  dplyr::rename(time=times, Pconc2=Mp181)
+d5_add <- tibble(time=120, p181=701.7*Pdat[21,idx+1], BrAC_mM=0, Pconc2=Pdat[21,idx+1])
+day5_real <- bind_rows(day5_real, d5_add)
+day234_real <- obs[c(9,15,17,23,25,31,33), c(4,21)] |>
+  dplyr::rename(time=times, Pconc2=Mp181)
+
+#sdr0 <- sd(log(obs_real$Mp181[c(1,3,5,6,9)]))
+#sdr2 <- sd(log(obs_real$Mp181[c(2,4,6,8,10)]))
+#psdr0 <- sd(obs_real$p181[c(1,3,5,6,9)])
+#psdr2 <- sd(obs_real$p181[c(2,4,6,8,10)])
+options(digits=8)
+#obs_real <-   mutate(obs_real, sd = rep(1.65, 16))
+if (idx==7) { 
+  obs_real[16,2] <- 13.25 
+  obs_real[16,4] <- 13.25/701.7
+  }
+obs_real <- bind_rows(obs_real[1:12,], d5_add)
+#amend$Pconc2[1] <- 0.177
+#amend$Pconc2[3] <- 0.188
+CLterm181 <- c(-5.413968,	-5.544202,	-5.530531,	-5.70707,	-6.307863,	-5.4325,
+               -6.101422,	-5.200162,	-5.739369,	-5.90014,	-5.835507,	-5.582476,
+               -6.657425,	-6.016103,	-5.231312,	-5.370929,	-5.535139)
+indiv_dat <- read.csv("../alc_pars/EtOH_jan23_Mod1pref_idata.csv")[idx,]
+startP <- indiv_dat$Pstart[1]
+indiv_dat$CLterm <- CLterm181[idx]
+#if (indiv_dat$Sex=="M") {
+#  indiv_dat$VBlood[1] <- log((13.1*indiv_dat$HT + 18.05*indiv_dat$WT - 480)/572.3)
+#} else {
+#    indiv_dat$VBlood[1] <- log((35.5*indiv_dat$HT + 2.27*indiv_dat$WT - 3382)/671.8)
+#  } 
+
+alc_fname <- paste0("../alc_pars/Et_pars",substring(id[idx],4,8),"b.csv")
+alc_day_pars <- read_csv(alc_fname, show_col_types=FALSE)
+
+dosing <- indiv_dat$WT[1]*nom_dose[idx]*1000/46.07 # dose in mmol alcohol
+d_obs <- tibble(ID=strtoi(substring(id[idx],4)), time=0, cmt=1, evid=1, 
+                    amt=dosing, addl=4, ii=24, rate=dosing/0.25)
+p50 <- tibble(ID=strtoi(substring(id[idx],4)), time=0, cmt=5, evid=1, amt=0.5*startP, addl=0, ii=0, rate=0)
+p60 <- tibble(ID=strtoi(substring(id[idx],4)), time=0, cmt=6, evid=1, amt=0.5*startP, addl=0, ii=0, rate=0)
+p70 <- tibble(ID=strtoi(substring(id[idx],4)), time=0, cmt=7, evid=1, amt=startP, addl=0, ii=0, rate=0)
+drink1 <- bind_rows(d_obs, p70, p60, p50)
+
+p3_50 <- tibble(ID=strtoi(substring(id[idx],4)), time=0, cmt=5, evid=1, amt=0.15*startP, addl=0, ii=0, rate=0)
+p3_60 <- tibble(ID=strtoi(substring(id[idx],4)), time=0, cmt=6, evid=1, amt=0.8*startP, addl=0, ii=0, rate=0)
+p3_70 <- tibble(ID=strtoi(substring(id[idx],4)), time=0, cmt=7, evid=1, amt=0.05*startP, addl=0, ii=0, rate=0)
+#p3_80 <- tibble(ID=strtoi(substring(id[i],4)), time=0, cmt=8, evid=1, amt=startP, addl=0, ii=0, rate=0)
+drink3 <- bind_rows(d_obs, p3_70, p3_60, p3_50)
+
+P_pars1 <- c(kform = -3.0362,
+             CLp = -4.3531,
+             CLrapid = -3.4372,
+             sig2 = 0.5)
+  
+
+P_sim2 <- Pmod %>% param(P_pars1) %>% data_set(d_obs) %>% idata_set(indiv_dat) %>% mrgsim(end=432, delta=1, maxsteps=50000)
+plot(P_sim2, PC1 ~ time)
+plot(P_sim2, PC2 ~ time)
+plot(P_sim2, Pconc ~ time | ID)
+plot(P_sim2, Central ~ time)
+plot(P_sim2, Stomach ~ time)
+plot(P_sim2, Gut ~ time)
+
+ggplot() +
+  geom_point(aes(x=time, y=Pconc2), data=obs_real) +
+  geom_line(aes(x=time, y=Pconc2), data=obs_real, linewidth=0.5) +
+  #geom_point(aes(x=time, y=Pconc2), data=amend, color="deepskyblue") +
+  #geom_line(aes(x=time, y=Pconc2), data=amend, color="deepskyblue", linetype=20) +
+  geom_line(aes(x=time, y=Pconc), data=P_sim2@data, color="blue3") +
+  scale_y_log10("PEth 16:0/18:1 (umol/L)") +
+   ggtitle(paste(id[idx],nom_dose[idx],"g/kg",indiv_dat$Sex[1], mname))
+
+ggplot() +
+  geom_point(aes(x=times, y=BrAC_mM), data=alc_dat) +
+  geom_line(aes(x=time, y=Central), data=P_sim2@data, color="blue3") +
+  ggtitle(paste(id[idx],nom_dose[idx],"g/kg",indiv_dat$Sex[1], mname))
+
+```
+
+
+
+
+refinement of days 1 and 5 using 0, 2, 24 hr only
+```{r}
+######## choose these #####
+dd <- 1
+var_alc15 <- 1
+###########################
+which_sig <- 4
+
+d15_par <- c( kform =  -2.7073794,
+              CLp = -1.2573497,
+              CLrapid = 2.3699153,
+              sig2 = 0.5
+            )
+options(digits=8)
+dpar <- read_csv(paste0("PEth_pars_M1/P181_pars_", substring(id[idx],4), "_M1p.csv"), show_col_types=F)
+d15_par <- dpar[dd,]
+#indiv_dat <- read.csv("../alc_pars/EtOH_jan23_Mod1pref_idata.csv")[idx,]
+day_ix <- c(1, 9, 17, 25, 33)
+if (dd==1) { ix <- 1}
+if (dd==5) { ix <- 33}
+#if (indiv_dat$Sex=="M") {
+#  indiv_dat$VBlood[1] <- log((13.1*indiv_dat$HT + 18.05*indiv_dat$WT - 480)/572.3)
+#} else {
+#    indiv_dat$VBlood[1] <- log((35.5*indiv_dat$HT + 2.27*indiv_dat$WT - 3382)/671.8)
+#} 
+#pars and ranges
+if (var_alc15==1) {
+  indiv_dat$ke <- alc_day_pars$ke[dd]
+  indiv_dat$ks <- alc_day_pars$ks[dd]
+  indiv_dat$ka <- alc_day_pars$ka[dd]
+  indiv_dat$Vmax <- alc_day_pars$Vmax[dd]
+  indiv_dat$Km <- alc_day_pars$Km[dd]
+  indiv_dat$CLd <- alc_day_pars$CLd[dd]
+  indiv_dat$Vcent <- alc_day_pars$Vcent[dd]
+  indiv_dat$Vtissue <- alc_day_pars$Vtissue[dd]
+  indiv_dat$Pstart <- obs$Mp181[ix]
+}
+
+
+
+which_sig <- 4
+#pread.u <- c(rep(0.5, 3), 0.01)
+#spread.d <- c(rep(0.5, 3), 3.3)
+#parRanges <- data.frame(min =  d15_par - spread.d,
+#                        max = d15_par + spread.u
+#)
+ # here change indices to refit days 1 or 5
+if (dd==1) { 
+  obsP <- day1_real[c(1,7,9),]
+  t_start <- 0
+  t_end <- 24
+  t_add <- 2
+} else {
+  obsP <- day5_real[c(1,7,9),]
+  t_start <- 0
+  t_end <- 24
+  t_add <- 2
+  for (i in (1:nrow(obsP))) { obsP$time[i] <- obsP$time[i] - 96 }
+}
+## change add in this function to adjust chosen times for days 1 and 5
+Pred_d15 <- function(pars) {
+  out<- Pmod %>% param(pars) %>% data_set(d_obs) %>% idata_set(indiv_dat) %>%
+    mrgsim_df(start=0, end=24, delta=24, 
+           add=2,
+           atol=1e-30, mxhnil=0, hmin=1e-20, maxsteps=100000)
+  out[2:nrow(out),]
+}
+
+Pred_sim_d15 <- function(pars) {
+  out<- Pmod %>% param(pars) %>% data_set(d_obs) %>% idata_set(indiv_dat) %>%
+    mrgsim_df(start=t_start, end = t_end, delta=0.25, 
+           atol=1e-30, mxhnil=0, hmin=1e-20, maxsteps=50000)
+  out[2:nrow(out),]
+}
+
+test_d15 <- Pred_d15(d15_par)
+init_d15 <- Pred_sim_d15(d15_par)
+
+if (dd==1) { 
+  alc <- alc_dat[1:9,] |>
+  mutate(time = times)
+}
+if (dd==5) {
+  alc <- alc_dat[33:40,] |>
+    mutate(time = times-96)
+}
+pcost_d15 <- function (pars){
+  out <- Pred_d15(pars)
+  cost <- (obsP$Pconc2 - out$Pconc)^2
+  return(cost)
+}
+sum(pcost_d15(d15_par))
+
+d15_mcmc.fun <- function(pars) {
+  out <- Pred_d15(pars)
+  yhat <- out$Pconc
+  log.yhat <- log(yhat)
+  log.y <- log(obsP$Pconc2)
+  sig <- rep(0.5,3)
+  log_likelihood <- -2*sum((dnorm(log.y, mean=log.yhat, sd = sig, log=TRUE)))
+  return(log_likelihood)
+}
+d15_mcmc.fun(d15_par)
+
+AUC_EtOH <- trapz(init_d15$time, init_d15$Central)
+AUC_PEth <- 701.7*trapz(init_d15$time, init_d15$Pconc)
+
+
+if(var_alc15==1) {
+  subt <- "daily EtOH pars"
+} else {
+  subt <- "median EtOH pars"
+}
+
+if (dd==1) { 
+  alc <- alc_dat[1:9,] |>
+  mutate(time = times)
+}
+if (dd==5) {
+  alc <- alc_dat[33:40,] |>
+    mutate(time = times-96)
+}
+ggplot() +
+  geom_point(aes(x=time, y=BrAC_mM), data=alc) +
+  geom_line(aes(x=time, y=Central), data=init_d15) +
+  scale_x_continuous(limits=c(t_start, t_end), breaks=c(0,6,12,18,24)) +
+  ggtitle(paste0(id[idx], " day ", dd, " ", mname, " AUC = ", sprintf("%3.3f",AUC_EtOH))) +
+  labs(subtitle = subt)
+
+ggplot() +
+  geom_point(aes(x=time, y=Pconc2*701.7), data=obsP) +
+  geom_line(aes(x=time, y=Pconc2*701.7), data=obsP) +
+  geom_line(aes(x=time, y=Pconc*701.7), data=init_d15, color="tomato") +
+  scale_y_log10("PEth 16:0/18:1 (ng/ml)") +
+  scale_x_continuous(limits=c(t_start, t_end)) +
+  ggtitle(paste0(id[idx], " day ", dd, mname, " AUC = ", sprintf("%5.3f",AUC_PEth))) 
+```
+
+after checking alcohol plot, continue
+```{r}
+#########
+fast <- 1 # 1 for pksensi, 0 for FME
+narrow <- 1
+#########
+
+pcost_d15 <- function (pars){
+  out <- Pred_d15(pars)
+  cost <- (obsP$Pconc2 - out$Pconc)^2
+  return(cost)
+}
+
+d15_mcmc.fun <- function(pars) {
+  out <- Pred_d15(pars)
+  yhat <- out$Pconc
+  log.yhat <- log(yhat)
+  log.y <- log(obsP$Pconc2)
+  sig <- rep(0.5,3)
+  log_likelihood <- -2*sum((dnorm(log.y, mean=log.yhat, sd = sig, log=TRUE)))
+  return(log_likelihood)
+}
+
+sum(pcost_d15(d15_par))
+d15_mcmc.fun(d15_par)
+
+######### generation of SA par sets ####
+library(pksensi)
+if (narrow==0) {
+  spars <- c("kform", "CLp", "CLrapid")
+  q <- rep("qunif", 3)
+  spread.u <- c(3, 5, 4.3)
+  spread.d <- c(-7, -8, -5)
+
+  q.arg <- list(list(min =  spread.d[1], 
+                   max = spread.u[1]),
+              list(min = spread.d[2], 
+                   max = spread.u[2] ),
+              list(min = spread.d[3], 
+                   max = spread.u[3] )
+              )
+  pRanges <- data.frame(min = spread.d,
+                      max = spread.u) 
+  rownames(pRanges) <- spars
+  nruns <- 20000
+  }
+if (narrow==1) {
+  spars <- c("kform", "CLp", "CLrapid")
+  q <- rep("qunif", 3)
+  spread.u <- 1
+  spread.d <- 1
+  q.arg <- list(list(min = d15_par[["kform"]]- spread.d, 
+                   max = d15_par[["kform"]] + spread.u),
+              list(min = d15_par[["CLp"]] - spread.d, 
+                   max = d15_par[["CLp"]] + spread.u ),
+              list(min = d15_par[["CLrapid"]] - spread.d, 
+                   max = d15_par[["CLrapid"]] + spread.u )
+              )
+  pRanges <- data.frame(min = d15_par[1:3] - spread.d, max = d15_par[1:3] + spread.u)
+  rownames(pRanges) <- spars
+
+  params <- c("kform", "CLp", "CLrapid")
+  nruns <- 2000
+  }
+
+set.seed(as.integer(Sys.time()))
+
+if (fast==0) {
+  sR_d15 <- sensRange(func=Pred_d15, parms=d15_par, dist="latin", sensvar="Pconc", parRange=pRanges, num=nruns)
+} else {
+ sa <- rfast99(spars, n = nruns, q = q, q.arg = q.arg, replicate = 1) 
+}
+
+
+low <- c(q.arg[[1]]$min, q.arg[[2]]$min, q.arg[[3]]$min, 0.01)
+high <- c(q.arg[[1]]$max, q.arg[[2]]$max, q.arg[[3]]$max,  3.3)
+
+LL15 <- double(length=nruns)
+pcosts15 <- double(length=nruns)
+df <- tibble()
+#pb <- txtProgressBar(min = 0, max = length(LL15), style = 3)
+for (i in 1:nruns) { 
+  if (fast==0) {
+    LL15[i] <- d15_mcmc.fun(c(sR_d15[i,1:3], sig2=0.5))
+    pcosts15[i] <- sum(pcost_d15(sR_d15[i,1:3]))
+    df1 <- bind_rows(llik=LL15[i], cost=pcosts15[i], kform=sR_d15[i,1], CLp=sR_d15[i,2],
+                   CLrapid=sR_d15[i,3] )
+  } else {
+     LL15[i] <- d15_mcmc.fun(c(sa$a[i,1,], sig2=0.5))
+     pcosts15[i] <- sum(pcost_d15(c(sa$a[i,1,], sig2=0.5)))
+     df1 <- bind_rows(llik=LL15[i], cost=pcosts15[i], kform=sa$a[i,1,1], CLp=sa$a[i,1,2],
+                   CLalc=sa$a[i,1,3] )
+  }
+ 
+  df <- bind_rows(df, df1)
+  #Sys.sleep(0.1)
+  # update progress bar
+ # setTxtProgressBar(pb, i)
+}
+
+LL_thrshld <- quantile(LL15, 0.2, na.rm=TRUE)
+pcost_thrshld <- quantile(pcosts15, 0.2, na.rm=TRUE)
+jj <- which(LL15<LL_thrshld)
+kk <- which(pcosts15<pcost_thrshld)
+ii <- c(jj, setdiff(kk, jj) )
+df_use15 <- df[ii,]
+
+sres15 <- tibble(time = c(t_start, t_add, t_end))
+AUC15 <- double(length(jj))
+for (i in 1:length(jj)) {
+  sp <- df_use15[i,3:5 ]
+   sfit15 <- Pred_d15(sp)$Pconc
+   time <- c(t_start, t_add, t_end)
+   AUC15[i] <- trapz(time, sfit15)
+   sres15 <- bind_cols(sres15, pc=sfit15, .name_repair="minimal")
+}
+real_AUC <- trapz(obsP$time, obsP$Pconc2)
+AUC_med <- median(AUC15)
+i_med <- which.min(abs(AUC15 - AUC_med))
+closest <- which.min(abs(AUC15 - real_AUC))
+
+#fitm15 <- fit_srm15$par
+
+
+
+bestp15 <- which.min(LL15[jj])
+bestp15 <- as.numeric(df_use15[bestp15,3:5])
+names(bestp15) <- c("kform", "CLp", "CLrapid")
+sum(pcost_d15(bestp15))
+
+bestssr15 <- which.min(pcosts15[kk])
+bestss15 <- as.numeric(df_use15[bestssr15,3:5])
+names(bestss15) <- c("kform", "CLp", "CLrapid")
+sum(pcost_d15(bestss15))
+
+auc_med15 <- as.numeric(df_use15[i_med,3:5])
+names(auc_med15) <- c("kform", "CLp", "CLrapid")
+sum(pcost_d15(auc_med15))
+
+auc_close15 <- as.numeric(df_use15[closest, 3:5])
+names(auc_close15) <- c("kform", "CLp",  "CLrapid")
+sum(pcost_d15(auc_close15))
+
+
+#d15_mcmc.fun(c(fitm15, sig2=0.5))
+d15_mcmc.fun(bestp15)
+d15_mcmc.fun(bestss15)
+d15_mcmc.fun(auc_med15)
+d15_mcmc.fun(auc_close15)
+
+Pfit_auc1 <- modFit(pcost_d15, auc_close15, method="Pseudo",  lower = pRanges$min, upper = pRanges$max)
+
+Pfit_auc2 <- modFit(pcost_d15, Pfit_auc1$par, method="BFGS", lower = pRanges$min, upper = pRanges$max)
+Pfit_auc3 <- modFit(pcost_d15, Pfit_auc2$par, method="Nelder-Mead", lower = pRanges$min, upper = pRanges$max)
+
+Pfit_auc1$par
+
+Pfit_auc2$par
+
+Pfit_auc3$par
+
+
+#fitm15res <- Pred_sim_d15(fitm15)
+bestres15 <- Pred_sim_d15(bestp15)
+bestols15 <- Pred_sim_d15(bestss15)
+auc_fit15 <- Pred_sim_d15(Pfit_auc3$par)
+
+sum(pcost_d15(Pfit_auc3$par))
+d15_mcmc.fun(Pfit_auc3$par)
+AUC_EtOH <- trapz(auc_fit15$time, auc_fit15$Central)
+AUC_PEth <- 701.7*trapz(auc_fit15$time, auc_fit15$Pconc)
+#ddd15 <- tibble()
+ddd15 <- bind_rows(bestp15, bestss15, auc_close15)
+
+if(var_alc15==1) {
+  subt <- "daily EtOH pars"
+} else {
+  subt <- "median EtOH pars"
+}
+
+if (dd==1) { 
+  alc <- alc_dat[1:9,] |>
+  mutate(time = times)
+}
+if (dd==5) {
+  alc <- alc_dat[33:40,] |>
+    mutate(time = times-96)
+}
+
+ggplot() +
+  geom_point(aes(x=time, y=BrAC_mM), data=alc) +
+  geom_line(aes(x=time, y=Central), data=auc_fit15) +
+  scale_x_continuous(limits=c(t_start, t_end), breaks=c(0,6,12,18,24)) +
+  ggtitle(paste0(id[idx], " day ", dd, " ", mname, " AUC = ", sprintf("%3.3f",AUC_EtOH))) +
+  labs(subtitle = subt)
+
+ggplot() +
+  geom_point(aes(x=time, y=Pconc2*701.7), data=obsP) +
+  geom_line(aes(x=time, y=Pconc2*701.7), data=obsP) +
+ #geom_line(aes(x=time, y=Pconc*701.7), data=bestres15, color="blue") +
+  #geom_line(aes(x=time, y=Pconc*701.7), data=bestols15, color="darkorchid") +
+  geom_line(aes(x=time, y=Pconc*701.7), data=auc_fit15, color="tomato") +
+  #geom_line(aes(x=time, y=Pconc*701.7), data=fitm15res, color="green") +
+  scale_y_log10("PEth 16:0/18:1 (ng/ml)") +
+  scale_x_continuous(limits=c(t_start, t_end)) +
+  ggtitle(paste0(id[idx], " day ", dd, " ", mname, " AUC = ", sprintf("%3.3f",AUC_PEth)))
+```
+
+
+# functions for individual day 2, 3, 4 fits
+```{r}
+# ind par should be mean of day234 best, lowSS 
+# need to change mrgmodel above to set Pconc2=Pstart at hr 24
+###### enter 2, 3, or 4 for days
+dd <- 2
+var_alc <- 1
+
+day_par <- c(kform = -0.34585304,
+             CLp = -0.70831503,
+             CLrapid = 1.19333964,
+             sig2 = 0.5
+             ) 
+
+which_sig <- 4
+
+#indiv_dat <- read.csv("../alc_pars/EtOH_jan23_Mod1pref_idata.csv")[idx,]
+if (dd==2) {
+  indiv_dat$Pstart <- obs_real$Pconc2[4]
+  t_start <- 24
+  t_end <- 48
+  t_add <- 26
+  t_amend <- c(25,26,30)
+}
+
+if (dd==3) {
+  indiv_dat$Pstart <- obs_real$Pconc2[6]
+  t_start <- 48
+  t_end <- 72
+  t_add <- 50
+  t_amend <- c(49,50,54)
+}
+
+if (dd==4) {
+  indiv_dat$Pstart <- obs_real$Pconc2[8]
+  t_start <- 72
+  t_end <- 96
+  t_add <- 74
+  t_amend <- c(73,74,78)
+}
+
+#if (indiv_dat$Sex=="M") {
+#  indiv_dat$VBlood[1] <- log((13.1*indiv_dat$HT + 18.05*indiv_dat$WT - 480)/572.3)
+#} else {
+#    indiv_dat$VBlood[1] <- log((35.5*indiv_dat$HT + 2.27*indiv_dat$WT - 3382)/671.8)
+#} 
+
+indiv_dat$ke = alc_day_pars$ke[dd]
+indiv_dat$ks = alc_day_pars$ks[dd]
+indiv_dat$ka = alc_day_pars$ka[dd]
+indiv_dat$Vmax = alc_day_pars$Vmax[dd]
+indiv_dat$Km = alc_day_pars$Km[dd]
+indiv_dat$CLd = alc_day_pars$CLd[dd]
+indiv_dat$Vcent = alc_day_pars$Vcent[dd]
+indiv_dat$Vtissue = alc_day_pars$Vtissue[dd]
+
+
+
+#pRanges <- data.frame(min <- day_par - 1.8,
+#                      max <- day_par + 1.8)
+
+day_mcmc.fun <- function(pars) {
+  if (dd==2) { y <- obs_real$Pconc2[4:6] }
+  if (dd==3) { y <- obs_real$Pconc2[6:8] }
+  if (dd==4) { y <- obs_real$Pconc2[8:10] }
+  pars.data <- pars[-which_sig]
+  names(pars.data) <- names(pars.data)
+  out <- Pred_day(pars.data)
+  yhat <- out$Pconc
+  log.yhat <- log(yhat)
+  log.y <- log(y)
+  sig <- rep(1.65,3)
+  log_likelihood <- -2*sum((dnorm(log.y, mean=log.yhat, sd = sig, log=TRUE)))
+  return(log_likelihood)
+}
+
+Pred_day <- function(pars) {
+  d_obs$time <- t_start
+  out<- Pmod %>% param(pars) %>% data_set(d_obs) %>% idata_set(indiv_dat) %>%
+    mrgsim_df(start=t_start, end=t_end, delta=24, add=t_add, 
+           atol=1e-30, mxhnil=0, hmin=1e-20, maxsteps=100000)
+  out[2:nrow(out),]
+}
+Pred_day_amend <- function(pars) {
+  d_obs$time <- t_start
+  out<- Pmod %>% param(pars) %>% data_set(d_obs) %>% idata_set(indiv_dat) %>%
+    mrgsim_df(start=t_start, end=t_end, delta=24, add=t_amend, 
+           atol=1e-30, mxhnil=0, hmin=1e-20, maxsteps=100000)
+  out[2:nrow(out),]
+}
+Pred_sim_day <- function(pars) {
+  d_obs$time <- t_start
+  out<- Pmod %>% param(pars) %>% data_set(d_obs) %>% idata_set(indiv_dat) %>%
+    #data_set(d_obs) %>% 
+    mrgsim_df(start=t_start, end=t_end, delta=0.25, 
+           atol=1e-30, mxhnil=0, hmin=1e-20, maxsteps=50000)
+  out[2:nrow(out),]
+}
+
+init_day <- Pred_sim_day(day_par)
+
+if (dd==2) { 
+  alc <- alc_dat[9:17,] 
+  obsP <- obs_real[4:6,]
+}
+if (dd==3) {
+  alc <- alc_dat[17:25,] |>
+    mutate(time = times-48)
+  obsP <- obs_real[6:8,]
+}
+if (dd==4) {
+  alc <- alc_dat[25:33,] |>
+    mutate(time = times-72)
+  obsP <- obs_real[8:10,]
+}
+
+pcost_day <- function(par) {
+  if (dd==2) cost <- (obs_real$Pconc2[4:6] - Pred_day(par)$Pconc)^2
+   if (dd==3) cost <- (obs_real$Pconc2[6:8] - Pred_day(par)$Pconc)^2
+    if (dd==4) cost <- (obs_real$Pconc2[8:10] - Pred_day(par)$Pconc)^2
+    wgt <- c(1,10,1)
+    return(cost)
+}
+
+
+AUC_EtOH <- trapz(init_day$time, init_day$Central)
+AUC_PEth <- 701.7*trapz(init_day$time, init_day$Pconc)
+
+if(var_alc==1) {
+  subt <- "daily EtOH pars"
+} else {
+  subt <- "median EtOH pars"
+}
+alc <- mutate(alc_dat, time=times)
+if (dd==2) { 
+  use_alc <- alc[9:17,]
+  t_start <- use_alc$time[1]
+  t_end <- use_alc$time[9]
+}
+if (dd==3) {
+  use_alc <- alc[17:25,] 
+  t_start <- use_alc$time[1]
+  t_end <- use_alc$time[9]
+}
+if (dd==4) {
+  use_alc <- alc[25:33,]
+  t_start <- use_alc$time[1]
+  t_end <- use_alc$time[9]
+}
+
+sum(pcost_day(day_par))
+ggplot() +
+  geom_point(aes(x=times, y=BrAC_mM), data=alc) +
+  geom_line(aes(x=time, y=Central), data=init_day) +
+  scale_x_continuous(limits=c(t_start, t_end)) +
+ ggtitle(paste0(id[idx], " day ", dd, mname, " AUC = ", sprintf("%3.3f",AUC_EtOH))) +
+  labs(subtitle = subt)
+
+ggplot() +
+  geom_point(aes(x=time, y=Pconc2*701.7), data=obsP) +
+  geom_line(aes(x=time, y=Pconc2*701.7), data=obsP) +
+  geom_line(aes(x=time, y=Pconc*701.7), data=init_day, color="tomato") +
+  scale_y_log10("PEth 16:0/18:1 (ng/ml)") +
+  scale_x_continuous(limits=c(t_start, t_end), breaks=c(t_start, t_start+6, t_start+12, t_start+18, t_end)) +
+ ggtitle(paste0(id[idx], " day ", dd, " ", mname, " AUC = ", sprintf("%3.3f",AUC_PEth))) 
+
+```
+
+
+
+```{r}
+fast <-1
+narrow <- 1
+
+pcost_day <- function(par) {
+  if (dd==2) cost <- (obs_real$Pconc2[4:6] - Pred_day(par)$Pconc)^2
+   if (dd==3) cost <- (obs_real$Pconc2[6:8] - Pred_day(par)$Pconc)^2
+    if (dd==4) cost <- (obs_real$Pconc2[8:10] - Pred_day(par)$Pconc)^2
+    return(cost)
+}
+
+pcost_day_amend<- function(par) {
+  if (dd==2) cost <-((amend$Pconc2[5:9] - Pred_day_amend(par)$Pconc)^2)
+   if (dd==3) cost <-((amend$Pconc2[9:13] - Pred_day_amend(par)$Pconc)^2)
+    if (dd==4) cost <-((amend$Pconc2[13:17] - Pred_day_amend(par)$Pconc)^2)
+    return(cost)
+}
+
+# now sensitivity analysis
+library(pksensi)
+if (narrow==0) {
+  spars <- c("kform", "CLp", "CLrapid")
+  q <- rep("qunif", 3)
+  spread.u <- c(2, 8, 4.5)
+  spread.d <- c(-12, -8, -7)
+
+  q.arg <- list(list(min =  spread.d[1], 
+                   max = spread.u[1]),
+              list(min = spread.d[2], 
+                   max = spread.u[2] ),
+              list(min = spread.d[3], 
+                   max = spread.u[3] )
+              )
+  pRanges <- data.frame(min = spread.d,
+                      max = spread.u) 
+  rownames(pRanges) <- spars
+  nruns <- 20000
+  }
+if (narrow==1) {
+   spars <- c("kform", "CLp", "CLrapid")
+  spread.u <- 0.5
+  spread.d <- 0.5
+  q.arg <- list(list(min = day_par[["kform"]]- spread.d, 
+                   max = day_par[["kform"]] + spread.u),
+              list(min = day_par[["CLp"]] - spread.d, 
+                   max = day_par[["CLp"]] + spread.u ),
+              list(min = day_par[["CLrapid"]]- spread.d, 
+                   max = day_par[["CLrapid"]] + spread.u )
+              )
+  pRanges <- data.frame(min = day_par[1:3] - spread.d, max = day_par[1:3] + spread.u)
+  rownames(pRanges) <- spars
+
+  params <- c("kform", "CLp", "CLrapid")
+  nruns <- 2000
+  }
+
+set.seed(as.integer(Sys.time()))
+if (fast==0) {
+  sR_day <- sensRange(func=Pred_day, parms=day_par, dist="latin", sensvar="Pconc",
+                      parRange=pRanges, num=nruns)
+  } else {
+    sa <- rfast99(spars, n = nruns, q = q, q.arg = q.arg, replicate = 1)
+  }
+
+LL_day <- double(length=nruns)
+pcosts_day <- double(length=nruns)
+df <- tibble()
+low <- c(q.arg[[1]]$min, q.arg[[2]]$min, q.arg[[3]]$min)
+high <- c(q.arg[[1]]$max, q.arg[[2]]$max, q.arg[[3]]$max)
+
+#pb <- txtProgressBar(min = 0, max = length(LL_day), style = 3)
+for (i in 1:nruns) { 
+  if (fast==0) {
+    LL_day[i] <- day_mcmc.fun(c(sR_day[i,1:3], sig2=0.5))
+    pcosts_day[i] <- sum(pcost_day(sR_day[i,1:3]))
+    df1 <- bind_rows(llik=LL_day[i], cost=pcosts_day[i], kform=sR_day[i,1], CLp=sR_day[i,2],
+                   CLrapid=sR_day[i,3] )
+    df <- bind_rows(df, df1)
+  } else {
+     LL_day[i] <- day_mcmc.fun(c(sa$a[i,1,], sig2=0.5))
+     pcosts_day[i] <- sum(pcost_day(c(sa$a[i,1,], sig2=0.5)))
+     df1 <- bind_rows(llik=LL_day[i], cost=pcosts_day[i], kform=sa$a[i,1,1], CLp=sa$a[i,1,2],
+                     CLrapid=sa$a[i,1,3] )
+     df <- bind_rows(df, df1)
+  }
+ #Sys.sleep(0.1)
+  # update progress bar
+  #progressiveness(pb, i)
+}
+
+
+
+LLd_thrshld <- quantile(LL_day, 0.2, na.rm=TRUE)
+pcostd_thrshld <- quantile(pcosts_day, 0.2, na.rm=TRUE)
+jj <- which(LL_day<LLd_thrshld)
+kk <- which(pcosts_day<pcostd_thrshld)
+ii <- c(jj, setdiff(kk, jj) )
+df_use_day <- df[ii,]
+
+#####
+sres_day <- tibble(time = c(t_start, t_add, t_end))
+AUC_day <- double(length(ii))
+for (i in 1:length(ii)) {
+  sp <- df_use_day[i, ]
+   sfit_day <- Pred_day(sp)$Pconc
+   time = c(t_start, t_add, t_end)
+   AUC_day[i] <- trapz(time, sfit_day)
+   sres_day <- bind_cols(sres_day, pc=sfit_day, .name_repair="minimal")
+}
+
+AUC_med_d <- median(AUC_day)
+i_med_d <- which.min(abs(AUC_day - AUC_med_d))
+
+best_day <- which.min(pcosts_day[jj])
+bestp_day <- as.numeric(df_use_day[best_day,3:5])
+names(bestp_day) <- c("kform", "CLp", "CLrapid")
+sum(pcost_day(bestp_day))
+
+bestssr_day <- which.min(pcosts_day[kk])
+bestss_day <- as.numeric(df_use_day[bestssr_day,3:5])
+names(bestss_day) <- c("kform", "CLp",  "CLrapid")
+sum(pcost_day(bestss_day))
+
+auc_choice_day <- as.numeric(df_use_day[i_med_d,3:5])
+names(auc_choice_day) <- c("kform", "CLp", "CLrapid")
+sum(pcost_day(auc_choice_day))
+
+real_AUC <- trapz(obsP$time, obsP$Pconc2)
+closest_day <- which.min(abs(AUC_day - real_AUC))
+auc_close_day <- as.numeric(df_use_day[closest_day,3:5])
+names(auc_close_day) <- c("kform", "CLp",  "CLrapid")
+sum(pcost_day(auc_close_day))
+
+Pfit_auc_d1 <- modFit(pcost_day, bestp_day, method="Marq", lower = pRanges$min, upper = pRanges$max)
+Pfit_auc_d2 <- modFit(pcost_day, Pfit_auc_d1$par, method="CG", lower = pRanges$min, upper = pRanges$max)
+Pfit_auc_d3 <- modFit(pcost_day, Pfit_auc_d2$par, method="Nelder-Mead", lower = pRanges$min, upper = pRanges$max)
+
+
+Pfit_auc_d1$par
+
+Pfit_auc_d2$par
+
+Pfit_auc_d3$par
+
+
+#fitm15res <- Pred_sim_d15(fitm15)
+bestres_day <- Pred_sim_day(bestp_day)
+bestols_day <- Pred_sim_day(bestss_day)
+auc_fit_day <- Pred_sim_day(Pfit_auc_d3$par)
+
+sum(pcost_day(Pfit_auc_d3$par))
+
+AUC_EtOH <- trapz(auc_fit_day$time, auc_fit_day$Central)
+AUC_PEth <- 701.7*trapz(auc_fit_day$time, auc_fit_day$Pconc)
+ddd <- tibble()
+ddd <- bind_rows(bestp_day, bestss_day, Pfit_auc_d3$par)
+
+if(var_alc==1) {
+  subt <- "daily EtOH pars"
+} else {
+  subt <- "median EtOH pars"
+}
+alc <- mutate(alc_dat, time=times)
+if (dd==2) { 
+  use_alc <- alc[9:17,]
+  t_start <- use_alc$time[1]
+  t_end <- use_alc$time[9]
+}
+if (dd==3) {
+  use_alc <- alc[17:25,] 
+  t_start <- use_alc$time[1]
+  t_end <- use_alc$time[9]
+}
+if (dd==4) {
+  use_alc <- alc[25:33,]
+  t_start <- use_alc$time[1]
+  t_end <- use_alc$time[9]
+}
+ggplot() +
+  geom_point(aes(x=times, y=BrAC_mM), data=alc) +
+  geom_line(aes(x=time, y=Central), data=auc_fit_day) +
+  scale_x_continuous(limits=c(t_start, t_end)) +
+  ggtitle(paste0(id[idx], " day ", dd, " ", mname, " AUC = ", sprintf("%3.3f",AUC_EtOH))) +
+  labs(subtitle = subt)
+
+ggplot() +
+  geom_point(aes(x=time, y=Pconc2*701.7), data=obsP) +
+  geom_line(aes(x=time, y=Pconc2*701.7), data=obsP) +
+ #geom_line(aes(x=time, y=Pconc*701.7), data=bestres15, color="blue") +
+  #geom_line(aes(x=time, y=Pconc*701.7), data=bestols15, color="darkorchid") +
+  geom_line(aes(x=time, y=Pconc*701.7), data=auc_fit_day, color="tomato") +
+  scale_y_log10("PEth 16:0/18:1 (ng/ml)") +
+  scale_x_continuous(limits=c(t_start, t_end), breaks=c(t_start, t_start+6, t_start+12, t_start+18, t_end)) +
+ ggtitle(paste0(id[idx], " day ", dd, " ", mname, " AUC = ", sprintf("%3.3f",AUC_PEth)))
+  
+```
+
+remake plots
+```{r}
+AUC_EtOH <- trapz(auc_fit_day$time, auc_fit_day$Central)
+AUC_PEth <- 701.7*trapz(auc_fit_day$time, auc_fit_day$Pconc)
+if(var_alc15==1) {
+  subt <- "daily EtOH pars"
+} else {
+  subt <- "median EtOH pars"
+}
+a <- Pred_sim_day(day_par)
+ggplot() +
+  geom_point(aes(x=times, y=BrAC_mM), data=alc) +
+  geom_line(aes(x=time+24, y=Central), data=a) +
+  scale_x_continuous(limits=c(24, 48)) +
+  ggtitle(paste0(id[idx], " day ", dd, " Model 1b refit with global SA, AUC = ", sprintf("%3.3f",AUC_EtOH))) +
+  labs(subtitle = subt)
+
+ggplot() +
+  geom_point(aes(x=time, y=Pconc2*701.7), data=obsP) +
+  geom_line(aes(x=time+24, y=Pconc2*701.7), data=obsP) +
+ #geom_line(aes(x=time, y=Pconc*701.7), data=bestres15, color="blue") +
+  #geom_line(aes(x=time, y=Pconc*701.7), data=bestols15, color="darkorchid") +
+  geom_line(aes(x=time, y=Pconc*701.7), data=auc_fit_day, color="tomato") +
+  #geom_line(aes(x=time, y=Pconc*701.7), data=fitm15res, color="green") +
+  scale_y_log10("PEth 16:0/18:1 (ng/ml)") +
+  scale_x_continuous(limits=c(t_start, t_end), breaks=c(t_start, t_start+6, t_start+12, t_start+18, t_end)) +
+  ggtitle(paste0(id[idx], " day ", dd, " Model 1b refit with global SA, AUC = ", sprintf("%5.3f",AUC_PEth))) +
+  labs(subtitle = subt, caption = "blue: MLE; violet: OLS; red: auc match; green: fit SA median")
+```
+
+
+

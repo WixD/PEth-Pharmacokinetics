@@ -1,0 +1,1512 @@
+---
+title: "fitting of PEth Model 1b"
+author: "Ted W. Simon"
+date: "09/05/22"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(message=TRUE, warning=TRUE)
+library(mrgsolve)
+library(magrittr)    # The pipe, %>%
+library(dplyr)
+library(ggplot2)
+library(brms)
+library(FME)
+library(minpack.lm)
+library(reshape)     # Package for melt function to reshape the table
+library(truncnorm)
+library(EnvStats)    # Environmental Statistics, Including US EPA Guidance
+library(invgamma)    # Package for inverse gamma distribution function
+library(foreach)     # Package for parallel computing
+library(doParallel)  # Package for parallel computing
+library(bayesplot)   # Package for MCMC traceplot
+library(readxl)      # Package to read Excel files
+library(readr)       # read for csv files from tidyverse
+library(pksensi)
+library(pracma)
+
+Pmod <- mread("Pcode1switch.cpp")
+mname <- "Mod 1pref"
+```
+
+first build observations and do initial sims
+
+```{r}
+############## choose individual
+idx <- 17
+#############
+id <- c("sid2000", "sid2001", "sid2002", "sid2003", "sid2006", "sid2008", "sid2009",
+   "sid2010", "sid2012", "sid2013", "sid2015", "sid2016", "sid2019",
+   "sid2023", "sid2025", "sid2030", "sid2032")
+idnum <- strtoi(substring(id,4))
+nom_dose <- c(0.4,0.8,0.4,0.8,0.4,0.8,0.8,
+              0.8,0.4,0.4,0.8,0.8,0.8,
+              0.4,0.8,0.4,0.8)
+
+Pdat <- read.csv("../Obs-PEthdata-081922.csv") |> filter(time<=432)
+amend <- tibble(time = Pdat$time, Pconc2=Pdat[,idx+1])
+obs <- read_xlsx("../New_data-051222.xlsx", sheet=id[idx], col_types=c(rep("text",2), rep("numeric",7), 
+                                                                  "text", "numeric", "text", rep("numeric",11) ),
+                 na="NA")
+obs_real <- obs[c(1,7,8,9,15,17,23,25,31,33,39,40:44), c(4,7,17,21)] |>
+  dplyr::rename(time=times, Pconc2=Mp181)
+if (idx==14) obs_real$Pconc2[14:16] <- amend$Pconc2[23:25]
+day1_real <- obs[1:9,c(4,17,21)] |>
+  dplyr::rename(time=times, Pconc2=Mp181)
+
+day5_real <- obs[33:40,c(4,17,21)] |>
+  dplyr::rename(time=times, Pconc2=Mp181)
+d5_add <- tibble(time=120, BrAC_mM=0, Pconc2=Pdat[21,idx+1])
+day5_real <- bind_rows(day5_real, d5_add)
+day234_real <- obs[c(9,15,17,23,25,31,33), c(4,21)] |>
+  dplyr::rename(time=times, Pconc2=Mp181)
+
+obs_real <-   mutate(obs_real, sd = rep(1.65, 16))
+if (idx==7) { 
+  obs_real[16,2] <- 13.25 
+  obs_real[16,4] <- 13.25/701.7
+  }
+
+CLterm181 <- c(-5.413968,	-5.544202,	-5.530531,	-5.70707,	-6.307863,	-5.4325,
+               -6.101422,	-5.200162,	-5.739369,	-5.90014,	-5.835507,	-5.582476,
+               -6.657425,	-6.016103,	-5.231312,	-5.370929,	-5.535139)
+indiv_dat <- read.csv("../alc_pars/EtOH_jan23_Mod1pref_idata.csv")[idx,]
+
+
+indiv_dat$CLterm <- CLterm181[idx]
+#if (indiv_dat$Sex=="M") {
+#  indiv_dat$VBlood[1] <- log((13.1*indiv_dat$HT + 18.05*indiv_dat$WT - 480)/572.3)
+#} else {
+#    indiv_dat$VBlood[1] <- log((35.5*indiv_dat$HT + 2.27*indiv_dat$WT - 3382)/671.8)
+#  } 
+
+alc_fname <- paste0("../alc_pars/Et_pars",substring(id[idx],4,8),"b.csv")
+alc_day_pars <- read_csv(alc_fname, show_col_types=FALSE)
+
+dosing <- indiv_dat$WT[1]*nom_dose[idx]*1000/46.07 # dose in mmol alcohol
+d_obs <- tibble(ID=strtoi(substring(id[idx],4)), time=0, cmt=1, evid=1, 
+                    amt=dosing, addl=4, ii=24, rate=dosing/0.25)
+
+P_pars1 <- c(kform = -5.0395,
+             CLp = -4.2870,
+             CLrapid = 1.0863,
+             sig2 = 0.5)
+
+P_sim1 <- Pmod %>% param(P_pars1) %>% data_set(d_obs) %>% idata_set(indiv_dat) %>% mrgsim(end=432, delta=1, maxsteps=50000)
+plot(P_sim1, PC1 ~ time)
+plot(P_sim1, PC2 ~ time)
+plot(P_sim1, Pconc ~ time | ID)
+plot(P_sim1, Tissue ~ time)
+
+alc_test1 <- Pmod %>% param(P_pars1) %>% data_set(d_obs) %>% 
+  idata_set(alc_day_pars[1,]) %>% mrgsim_df(start=0, end=24, delta=0.25, maxsteps=50000)
+alc_test5 <- Pmod %>% param(P_pars1) %>% data_set(d_obs) %>% 
+  idata_set(alc_day_pars[5,]) %>% mrgsim_df(start=96, end=120, delta=0.25, maxsteps=50000)
+alc_test_avg <- Pmod %>% param(P_pars1) %>% data_set(d_obs) %>% 
+  idata_set(indiv_dat) %>% mrgsim_df(start=0, end=24, delta=0.25, maxsteps=50000)
+ggplot() +
+  geom_point(aes(x=time, y=BrAC_mM), data=day1_real) +
+  geom_line(aes(x=time, y=Central), data=alc_test1) +
+  geom_line(aes(x=time, y=Central), data=alc_test_avg, linetype=2) +
+  scale_x_continuous(limits=c(0,24)) +
+  ggtitle(paste0("day 1 EtOH ", id[idx]))
+ggplot() +
+  geom_point(aes(x=time, y=BrAC_mM), data=day5_real) +
+  geom_line(aes(x=time, y=Central), data=alc_test5) +
+  geom_line(aes(x=time+96, y=Central), data=alc_test_avg, linetype=2) +
+  scale_x_continuous(limits=c(96,120)) +
+  ggtitle(paste0("day 5 EtOH ", id[idx]), mname)
+ggplot() +
+  geom_point(aes(x=time, y=Pconc2), data=obs_real) +
+  geom_line(aes(x=time, y=Pconc2), data=obs_real, linewidth=0.5) +
+  geom_line(aes(x=time, y=Pconc), data=P_sim1@data, color="blue3") +
+  scale_y_log10("PEth 16:0/18:1 (umol/L)")
+
+
+```
+
+add=c(2,6,24,25,26,30,48,50,54,72,73,74,79,96,97,98), fitting functions and individual fits for model 1
+
+```{r}
+# fit to amend first then to real
+# change this by bringing in longer time vector for amended data
+Pred_p1 <- function (pars) {
+  out<- Pmod %>% param(pars) %>% data_set(d_obs) %>% idata_set(indiv_dat) %>%
+    mrgsim_df(start=0, end=432, delta=432, 
+           add=c(2,6,24,26,48, 50,72, 74,96, 98, 102, 168, 264, 336),
+           atol=1e-30, mxhnil=0, hmin=1e-50)
+  out[2:nrow(out),-1]
+}
+  
+Pred_sim <- function (pars) {
+  out<- Pmod %>% param(pars) %>% data_set(d_obs) %>% idata_set(indiv_dat) %>%
+    mrgsim_df(start=0, end=432, delta=432,
+              add = c(0.25, 0.5, 0.75, 1, 1.5, 2, 3, 4, 5, 6, 7, 8,
+                      24, 24.25, 24.5, 24.75, 25, 25.5, 26, 27, 28, 29, 30, 31, 32,
+                      48, 48.25, 48.5, 48.75, 49, 49.5, 50, 51, 52, 53, 54, 55, 56,
+                      72, 72.25, 72,5, 72.75, 73, 73.5, 74, 75, 76, 77, 78, 79, 80,
+                      96, 96.25, 96.5, 96.75, 97, 97.5, 98, 99, 100, 101, 102, 103, 104,
+                      120, 168, 264, 336),
+           atol=1e-30, mxhnil=0, hmin=1e-50)
+  out[2:nrow(out),]
+}
+### model 12afit ######
+
+out <- Pred_p1(P_pars1)
+
+pcost1 <- function (pars) {
+  out <- Pred_p1(pars)
+  #obs <- obs_real[,c(1,4,5)]
+  wts <- c(rep(1,12), rep(10,4))
+  cost <- ((obs_real$Pconc2 - out$Pconc)^2)/wts
+  return(cost)
+}
+a <- pcost1(P_pars1)
+lb <- c(P_pars1[1:3] - 6, 0.01)
+ub <-  c(P_pars1[1:3] + 6, 3.3)
+
+Pfit1 <- modFit(pcost1, P_pars1, method="Marq",
+                lower = lb, upper = ub
+)
+Pfit1$par
+Pfit1$ssr
+fitted1 <- Pred_sim(Pfit1$par)
+
+Pfit2 <- modFit(pcost1, Pfit1$par, method="CG",
+                    lower = lb, upper = ub
+)
+Pfit2$par
+Pfit2$ssr
+fitted2 <- Pred_sim(Pfit2$par)
+
+Pfit3 <- modFit(pcost1, Pfit2$par, method="bobyqa",
+                    lower = lb, upper = ub
+)
+
+Pfit3$par
+Pfit3$ssr
+fitted3 <- Pred_sim(Pfit3$par)
+
+Pfit4 <- modFit(pcost1, Pfit3$par, method="Nelder-Mead",
+                    lower = lb, upper = ub
+)
+
+Pfit4$par
+Pfit4$ssr
+fitted4 <- Pred_sim(Pfit4$par)
+ggplot() +
+  geom_point(aes(x=times, y=BrAC_mM), data=obs) +
+  geom_line(aes(x=times, y=BrAC_mM), data=obs, linewidth=0.5) +
+  geom_line(aes(x=time, y=Central), data=fitted4, color="blue3") +
+  scale_x_continuous(limits=c(0,120))
+
+ggplot() +
+  geom_point(aes(x=time, y=Pconc2*701.7), data=obs_real) +
+  geom_line(aes(x=time, y=Pconc2*701.7), data=obs_real, linetype=2, linewidth=0.4) +
+  geom_line(aes(x=time, y=Pconc*701.7), data=fitted1, color="tomato") +
+  geom_line(aes(x=time, y=Pconc*701.7), data=fitted2, color="blue") +
+  geom_line(aes(x=time, y=Pconc*701.7), data=fitted3, color="green") +
+  geom_line(aes(x=time, y=Pconc*701.7), data=fitted4, color = "violet") +
+  scale_y_log10() +
+  ggtitle(paste(id[idx],"M1b2",nom_dose[idx],"g/kg",indiv_dat$Sex[1]))
+
+ggplot() +
+  geom_point(aes(x=time, y=Pconc2*701.7), data=obs_real) +
+  geom_line(aes(x=time, y=Pconc2*701.7), data=obs_real, linetype=2, linewidth=0.4) +
+  #geom_line(aes(x=time, y=Pconc*701.7), data=fitted4, color="blue") +
+  geom_line(aes(x=time, y=Pconc*701.7), data=fitted4, color="tomato") +
+  scale_y_log10("PEth 16:0/18:1 (ng/ml)") +
+  ggtitle(paste0(id[idx], mname))
+
+P_sim2 <- Pmod %>% param(Pfit4$par) %>% data_set(d_obs) %>% idata_set(indiv_dat) %>% mrgsim(end=432, delta=1, maxsteps=50000)
+plot(P_sim2, PC1 ~ time)
+plot(P_sim2, PC2 ~ time | ID)
+plot(P_sim2, Pconc ~ time)
+  
+```
+
+# Sensitivity analysis and mcmc functions
+
+Global SA using the package 'pksensi' was used to find initial parameters snd limits for the parallel 4-chain MCMC using data from all five days.
+
+mcmc loglikelihood function and global SA to find starting parameters
+
+```{r}
+use_p1 <- Pfit4$par
+
+use_p1[["sig2"]] <- 0.5
+
+mcmc.fun <- function(pars) {
+  pars.data <- pars[-which_sig]
+  names(pars.data) <- names(pars.data)
+  out <- Pred_p1(pars.data)
+  yhat <- out$Pconc
+  log.yhat <- log(yhat)
+  log.y <- log(obs_real$Pconc2)
+  sig <- rep(exp(as.numeric(pars[which_sig])), 16)
+  log_likelihood <- -2*sum((dnorm(log.y, mean=log.yhat, sd = sig, log=TRUE)))
+  if (is.na(log_likelihood)) { 
+    LLik <- 100000
+  } else {
+    LLik <- log_likelihood
+  }
+  return(LLik)
+}
+which_sig <- 4
+spars <- c("kform", "CLp",  "CLrapid")
+q <- rep("qunif", 3)
+spread.u <- 4
+spread.d <- 4
+q.arg <- list(list(min = use_p1[["kform"]] - spread.d, 
+                   max = use_p1[["kform"]] + spread.u),
+              list(min = use_p1[["CLp"]] - spread.d, 
+                   max = use_p1[["CLp"]] + spread.u),
+              list(min = use_p1[["CLrapid"]] - spread.d,
+                   max = use_p1[["CLrapid"]] + spread.u)
+              )
+# generate matrix of parameters
+nruns <- 8000
+set.seed(as.integer(Sys.time()))
+params <- c("kform", "CLp", "CLrapid")
+sa <- rfast99(spars, n = nruns, q = q, q.arg = q.arg, replicate = 1)
+low <- c(q.arg[[1]]$min, q.arg[[2]]$min, q.arg[[3]]$min,  0.01)
+high <- c(q.arg[[1]]$max, q.arg[[2]]$max, q.arg[[3]]$max,  3.3)
+
+LL <- double(length=nruns)
+pcosts <- double(length=nruns)
+
+df <- tibble()
+#pb <- txtProgressBar(min = 0, max = length(LL), style = 3)
+for (i in 1:nruns) { 
+  LL[i] <- mcmc.fun(c(sa$a[i,,], sig2=0.5))
+  pcosts[i] <- sum(pcost1(c(sa$a[i,1,], sig2=0.5)))
+  df1 <- bind_rows(llik=LL[i], cost=pcosts[i], kform=sa$a[i,1,1], CLp=sa$a[i,1,2],
+                 CLrapid=sa$a[i,1,3] )
+  df <- bind_rows(df, df1)
+  #Sys.sleep(0.1)
+  # update progress bar
+  #setTxtProgressBar(pb, i)
+}
+
+LL_thrshld <- quantile(LL, 0.2, na.rm=TRUE)
+pcost_thrshld <- quantile(pcosts, 0.2, na.rm=TRUE)
+jj <- which(LL<LL_thrshld)
+kk <- which(pcosts<pcost_thrshld)
+dd <- c(jj, setdiff(kk, jj) )
+df_to_use <- df[kk,]
+# calculate 
+
+time_5days <- c(0,2,6,24,26,48,50,72,74,96,98,102, 168, 264,  336,  432)
+sres_all <- tibble(time = time_5days)
+AUC_all <- double(length(jj))
+for (i in 1:length(jj)) {
+  spar <- c(df_to_use[i, 3:5])
+   all_fit <- Pred_p1(spar)$Pconc
+   AUC_all[i] <- trapz(sres_all$time, all_fit)
+   if (all(all_fit>0)) sres_all <- bind_cols(sres_all, p_all=all_fit, .name_repair = "minimal")
+}
+
+AUC_med_all <- median(AUC_all)
+AUC_lo_all <- quantile(AUC_all, 0.01)
+AUC_hi_all <- quantile(AUC_all, 0.99)
+ix_med <- which.min(abs(AUC_all - AUC_med_all))
+ix_lo <- which.min(abs(AUC_all - AUC_lo_all))
+ix_hi <- which.min(abs(AUC_all - AUC_hi_all))
+med_pr_all <- Pred_p1(c(df_to_use[ix_med, 3:5]))
+lo_pr_all <- Pred_p1(c(df_to_use[ix_lo, 3:5]))
+hi_pr_all <- Pred_p1(c(df_to_use[ix_hi, 3:5]))
+auc_df <- tibble(time = lo_pr_all$time, med = med_pr_all$Pconc, lo=lo_pr_all$Pconc, hi=hi_pr_all$Pconc)
+bestLL_all <- which.min(LL[jj])
+bestssr_all <- which.min(pcosts[kk])
+
+bestp_all <- c(kform = as.numeric(df_to_use[bestLL_all,3]),
+           CLp = as.numeric(df_to_use[bestLL_all,4]),
+           CLrapid = as.numeric(df_to_use[bestLL_all,5]),
+           sig2 = 0.5
+)
+bestp_all
+bestp_fit <- Pred_p1(bestp_all)
+sum(pcost1(bestp_all))
+bestss_all <- c(kform = as.numeric(df_to_use[bestssr_all,3]),
+           CLp = as.numeric(df_to_use[bestssr_all,4]),
+           CLrapid = as.numeric(df_to_use[bestssr_all,5]),
+           sig2 = 0.5
+)
+bestss_all
+bestss_fit <- Pred_p1(bestss_all)
+sum(pcost1(bestss_all))
+auc_choice_all <- c(kform = as.numeric(df_to_use[ix_med,3]),
+                    CLp = as.numeric(df_to_use[ix_med,4]),
+                    CLrapid = as.numeric(df_to_use[ix_med,5]),
+                    sig2 = 0.5
+)
+
+Pfit4$par
+sum(pcost1(Pfit4$par))
+auc_choice_all
+auc_choice_fit <- Pred_p1(auc_choice_all)
+sum(pcost1(auc_choice_all))
+auc_lo <- df_to_use[ix_lo, 3:5]
+auc_hi <- df_to_use[ix_hi, 3:5]
+auc_lo
+auc_hi
+
+
+## AIC-weighted avg
+AIC1 <- -2*log(sum(pcost1(bestp_all))/12) + 2*4
+AIC2 <- -2*log(sum(pcost1(bestss_all))/12) + 2*4
+AIC3 <- -2*log(sum(pcost1(Pfit4$par))/12) + 2*4
+AIC4 <- -2*log(sum(pcost1(auc_choice_all))/12) + 2*4
+w1 <- 1/exp(-0.5*AIC1)
+w2 <- 1/exp(-0.5*AIC2)
+w3 <- 1/exp(-0.5*AIC3)
+w4 <- 1/exp(-0.5*AIC4)
+wgt1 <- w1/(w1+w4+w3+w2)
+wgt2 <- w2/(w1+w4+w3+w2)
+wgt3 <- w3/(w1+w4+w3+w2)
+wgt4 <- w4/(w1+w4+w3+w2)
+avg_starting_pars <- c(kform = as.numeric(sum(wgt1*bestp_all[1], 
+                                              wgt2*bestss_all[1], 
+                                              wgt3*Pfit4$par[1], 
+                                              wgt4*auc_choice_all[1])),
+                       CLp = as.numeric(sum(wgt1*bestp_all[2], 
+                                            wgt2*bestss_all[2], 
+                                            wgt3*Pfit4$par[2], 
+                                            wgt4*auc_choice_all[2])),
+                       CLrapid = as.numeric(sum(wgt1*bestp_all[3], 
+                                            wgt2*bestss_all[3], 
+                                            wgt3*Pfit4$par[3], 
+                                            wgt4*auc_choice_all[3])),
+                       sig2 = 0.5
+)
+
+gfast <- tibble(kform = c(bestp_all[1], bestss_all[1], Pfit4$par[1], auc_choice_all[1]),
+              CLp = c(bestp_all[2], bestss_all[2], Pfit4$par[2], auc_choice_all[2]),
+              CLrapid = c(bestp_all[3], bestss_all[3], Pfit4$par[3], auc_choice_all[3])
+              #CLrapid = c(bestp_all[4], bestss_all[4], Pfit4$par[4], auc_choice_all[4])
+)
+
+print(bestp_all, digits=6)
+sum(pcost1(bestp_all))
+print(bestss_all, digits=6)
+sum(pcost1(bestss_all))
+print(Pfit4$par, digits=6)
+sum(pcost1(Pfit4$par))
+print(Pfit4$par, digits=6)
+sum(pcost1(Pfit4$par))
+print(auc_choice_all, digits=6)
+sum(pcost1(auc_choice_all))
+print("avg starting pars")
+print(avg_starting_pars, digits = 6)
+sum(pcost1(avg_starting_pars))
+
+starting_pred <- Pred_p1(avg_starting_pars)
+
+ggplot() +
+  geom_point(aes(x=time, y=Pconc2*701.7), data=obs_real) +
+  geom_line(aes(x=time, y=Pconc2*701.7), data=obs_real, linetype=2, linewidth=0.4) +
+  geom_line(aes(x=time, y=Pconc*701.7), data=fitted4, color="blue") +
+  geom_line(aes(x=time, y=Pconc*701.7), data=bestp_fit, color="darkorchid") +
+  geom_line(aes(x=time, y=Pconc*701.7), data=bestss_fit, color="darkolivegreen") +
+  geom_line(aes(x=time, y=Pconc*701.7), data=auc_choice_fit, color="tomato") +
+  #geom_ribbon(aes(x=time, ymin=lo*701.7, ymax=hi*701.7), data=auc_df, alpha=0.2) +
+  geom_line(aes(x=time, y=Pconc*701.7), data=starting_pred, color="orange") +
+  scale_y_log10("PEth 16:0/18:1 (ng/ml)") +
+  ggtitle(paste0(id[idx], mname)) +
+  labs(caption="black: Aim2 data; blue: Nelder-Mead fit; auc MLE: violet; auc OLS: light blue; median pars by AUC\n red: weighted avg 
+       gray ribbon: 98% 2-sided interval from AUC")
+
+P_sim2 <- Pmod %>% param(avg_starting_pars) %>% data_set(d_obs) %>% idata_set(indiv_dat) %>% mrgsim(end=432, delta=1)
+plot(P_sim2, PC1 ~ time | ID)
+plot(P_sim2, PC2 ~ time | ID)
+plot(P_sim2, Pconc ~ time | ID)
+```
+
+## now sens anal with FME to inform individual day fits
+
+```{r}
+spread.u <- 2.5
+spread.d <- 2.5
+use_p <- avg_starting_pars
+
+parRanges <- data.frame(min = use_p[1:3] - spread.d,
+                        max = use_p[1:3] + spread.u)
+
+
+
+#rownames(parRanges) <- c("kform", "CLp", "CLrapid")
+nruns <- 5000
+sR_all <- sensRange(func=Pred_p1, parms=use_p[1:3], dist="latin", sensvar="Pconc", parRange=parRanges, num=nruns)
+
+med_PEth <- apply(sR_all[,4:19], 2, median, na.rm=TRUE)
+CI_PEth <- apply(sR_all[,4:19], 2, quantile, prob=c(0.25,0.75), na.rm=TRUE)
+df_med <- data.frame(time = obs_real$time, 
+                     Pconc=as.numeric(med_PEth), 
+                     lo=as.numeric(CI_PEth[1,]), 
+                     hi=as.numeric(CI_PEth[2,])
+)
+
+
+obj_m <- function(pars) {
+  y <- df_med$Pconc
+  y.hat <- Pred_p1(pars)$Pconc
+  cost <- 2*(y-y.hat)^2
+}
+
+fit_m <- modFit(obj_m, use_p[1:3], method="Nelder-Mead", lower=parRanges$min, upper=parRanges$max)
+fit_m$par
+sum(pcost1(fit_m$par))
+mcmc.fun(c(fit_m$par, sig2=0.5))
+fitted_srm <- Pred_p1(fit_m$par)
+
+sR_costs <- double(length=nruns)
+sR_LL <- double(length=nruns)
+for (i in 1:nruns) {
+  sR_costs[i] <- sum(pcost1(sR_all[i,1:3]))
+  sR_LL[i] <- mcmc.fun(c(sR_all[i,1:3], sig2=0.5))
+}
+med_pars <- apply(sR_all[,1:3], 2, median)
+med_cost <- sum(pcost1(med_pars))
+med_LL <- mcmc.fun(c(med_pars, sig2=0.5))
+
+ss_best <- sR_all[which.min(sR_costs),1:3]
+LL_best <- sR_all[which.min(sR_LL),1:3]
+
+print(fit_m$par, digits=6)
+sum(pcost1(fit_m$par))
+print(ss_best, digits=6)
+sum(pcost1(ss_best))
+print(LL_best, digits=6)
+sum(pcost1(LL_best))
+print(med_pars, digits=6)
+sum(pcost1(med_pars))
+
+ggg <- tibble(kform = c(fit_m$par[1], ss_best[1], LL_best[1], med_pars[1]),
+              CLp = c(fit_m$par[2], ss_best[2], LL_best[2], med_pars[2]),
+              CLrapid = c(fit_m$par[3], ss_best[3], LL_best[3], med_pars[3])
+              )
+
+mcmc.fun(c(ss_best, sig2=0.5))
+mcmc.fun(c(LL_best, sig2=0.5))
+mcmc.fun(c(med_pars, sig2=0.5))
+
+Pred_ss <- Pred_p1(ss_best)
+Pred_LL <- Pred_p1(LL_best)
+Pred_med <- Pred_p1(med_pars)
+
+Pred_alc <- Pred_sim(med_pars)
+
+ggplot() +
+  geom_point(aes(x=times, y=BrAC_mM), data=obs) +
+  geom_line(aes(x=time, y=Central), data=Pred_alc) +
+  scale_x_continuous(limits=c(0,120)) +
+  ggtitle(paste0(id[idx], "start_pars ", mname)) 
+
+ggplot() +
+  geom_point(aes(x=time, y=Pconc2*701.7), data=obs_real) +
+  geom_line(aes(x=time, y=Pconc2*701.7), data=obs_real, linetype=2, linewidth=0.4) +
+  geom_line(aes(x=time, y=Pconc*701.7), data=df_med, color="tomato") +
+  geom_line(aes(x=time, y=Pconc*701.7), data=fitted_srm, color="burlywood3") +
+  geom_line(aes(x=time, y=Pconc*701.7), data=Pred_ss, color="blue") +
+  geom_line(aes(x=time, y=Pconc*701.7), data=Pred_LL, color="darkorchid") +
+  geom_line(aes(x=time, y=Pconc*701.7), data=Pred_med, color="green") +
+  geom_ribbon(aes(x=time, ymin=Pconc*701.7, ymax=Pconc*701.7), data=df_med, alpha=0.2) +
+  scale_y_log10("PEth 16:0/18:1 (ng/ml)") +
+  scale_x_continuous(limits=c(0,432)) +
+  ggtitle(paste0(id[idx], " ", mname)) +
+  labs(caption="sensitivity of all")
+
+
+
+
+```
+
+# mcmc functions
+
+```{r}
+which_sig <- 4
+## get these from Excel
+
+start_pars <- c(kform = -5.2323,
+                CLp = -1.4206,
+                CLrapid = -2.5687,
+                sig2 = 0.5000
+                )
+
+start_pred <- Pred_p1(start_pars)
+
+ggplot() +
+  geom_point(aes(x=times, y=BrAC_mM), data=obs) +
+  geom_line(aes(x=time, y=Central), data=start_pred) +
+  scale_x_continuous(limits=c(0,120)) +
+  ggtitle(paste0(id[idx], "start_pars Model 1pref")) 
+
+ggplot() +
+  geom_point(aes(x=time, y=Pconc2*701.7), data=obs_real) +
+  geom_line(aes(x=time, y=Pconc2*701.7), data=obs_real, linetype=2, linewidth=0.4) +
+  geom_line(aes(x=time, y=Pconc*701.7), data=start_pred, color="tomato") +
+  scale_y_log10("PEth 16:0/18:1 (ng/ml)") +
+  scale_x_continuous(limits=c(0,432)) +
+  ggtitle(paste0(id[idx], "start_pars Model 1pref")) 
+  
+spread.d <- c(1,1,0.5)
+spread.u <-c(1,1,0.5)
+pRanges <- data.frame(min = as.numeric(start_pars[1:3]) - spread.d,
+                      max = as.numeric(start_pars[1:3]) + spread.u)
+ssig <- tibble(min=0.01, max=3.3)
+pRanges <- bind_rows(pRanges, ssig)
+row.names(pRanges) <- c("kform", "CLp", "CLrapid", "sig2")
+
+Prior <- function(pars) {
+  sig2 <- as.numeric(pars[which_sig])          # error variances from model esidual          
+  mean = as.numeric(pars[-which_sig])
+  CV  = 0.5     # Coefficient of variation; Default value of 0.5 in all parameters (Bois,2000; Bois et al., 1996)
+  sd = abs(mean*CV)
+  # Calculate likelihoods of each parameters; P(u|M,S)
+  mean=pars[1:3]
+  sd = exp(sig2)
+  prior_pars = dtruncnorm(as.numeric(pars[-which_sig]), a = qnorm(0.025, mean = mean, sd = sd), 
+                                   b = qnorm(0.975, mean = mean, sd = sd),
+                                   mean = mean, sd = sd ) 
+  prior_sig2     = dunif (sig2, min = 0.2, max = 1.7)  #  LB and UB from Chiu et al., 2009; Chiu et al., 2014)   
+  ## individual level; P(theta|u,sigmal^2)
+  mean_i         = prior_pars
+  sd_i           = sd
+  prior_pars_i   = dtruncnorm (prior_pars, 
+                               a = qnorm(0.025, mean = mean_i, sd = sd_i), 
+                               b = qnorm(0.975, mean = mean_i, sd = sd_i), 
+                               mean = mean_i, sd = sd_i) 
+  # log-transformed (log-likelihoods of each parameter)
+  log.pri.pars   = log(prior_pars)
+  log.pri.pars.i = log(prior_pars_i)
+  log.pri.sig2   = log(prior_sig2)
+  # Maximum likelihood estimation (MLE): negative log-likelihood function, (-2 times sum of log-likelihoods)
+  MLE =  -2*sum(log.pri.pars, log.pri.pars.i, log.pri.sig2)  
+  return(MLE)
+}
+
+## limits - here change spread according to the AUC plot aboves
+spread.mc <- 3
+q.arg.mc <- list(list(min = log(exp(start_pars[["kform"]])/spread.mc), 
+                   max = log(exp(start_pars[["kform"]])*spread.mc)),
+              list(min = log(exp(start_pars[["CLp"]])/spread.mc), 
+                   max = log(exp(start_pars[["CLp"]])*spread.mc )),
+              list(min = log(exp(start_pars[["CLrapid"]])/spread.mc), 
+                   max = log(exp(start_pars[["CLrapid"]])*spread.mc ))
+              )
+
+low <- c(as.numeric(q.arg.mc[[1]]$min), as.numeric(q.arg.mc[[2]]$min), as.numeric(q.arg.mc[[3]]$min),   0.01)
+high <- c(as.numeric(q.arg.mc[[1]]$max), as.numeric(q.arg.mc[[2]]$max), as.numeric(q.arg.mc[[3]]$max),  3.3)         
+
+
+mcmc.fun <- function(pars) {
+  out <- Pred_p1(pars)
+  yhat <- out$Pconc
+  log.yhat <- log(yhat)
+  log.y <- log(obs_real$Pconc2)
+  sig <- rep(exp(as.numeric(pars[which_sig])), 16)
+  log_likelihood <- -2*sum(dnorm(log.y, mean=log.yhat, sd = sig, log=TRUE))
+  return(log_likelihood)
+}
+# now test the functions
+test1 <- mcmc.fun(start_pars)
+test1
+test2 <- Prior(start_pars)
+test2
+
+```
+
+MCMC fit of all days
+
+```{r}
+PMC_pars <- start_pars
+up <- 5
+down <- 5
+pRanges <- data.frame(min = c(start_pars[1] - 5, start_pars[2] - 5, start_pars[3] - 5, sig2=0.01),
+                        max = c(start_pars[1] + 5, start_pars[2] + 5, start_pars[3] + 5, sig2=3.3))
+
+library(doParallel)
+detectCores()
+cl <- makeCluster(detectCores())
+registerDoParallel(cl)
+strt <- Sys.time()
+
+# parallel
+system.time(
+P.MCMC <- foreach ( i = 1:4, .packages = c('mrgsolve','magrittr','FME','truncnorm','dplyr')) %dopar% {
+    modMCMC(f             = mcmc.fun, 
+            p             = PMC_pars,
+            niter         = 200000,           ## iteration number 
+            lower = c(pRanges$min),
+            upper = c(pRanges$max),
+            jump          = 0.01,       ## jump function generation using covariate matrix
+            prior         = Prior,            ## prior function
+            updatecov     = 50,               ## Adaptive Metropolis
+            var0          = NULL,             ## initial model variance;
+            wvar0         = 0.01,             ## "Weight" for the initial model variance
+            ntrydr        = 2,              ## Delayed Rejection
+            burninlength  = 60000,          ## number of initial iterations to be removed from output.
+            outputlength  = 10000
+            
+            )
+     }
+)
+print(Sys.time() - strt)
+stopCluster(cl)
+
+#fname <- paste0(id[idx],"_M1b2_MCMC.Rds")
+#saveRDS(P.MCMC, fname)
+ 
+#P.MCMC <- readRDS("sid2016_M1b2_MCMC.Rds")
+
+ P_all_MC1 <- as.mcmc( P.MCMC[[1]]$pars )
+ P_all_MC2 <- as.mcmc( P.MCMC[[2]]$pars )
+ P_all_MC3 <- as.mcmc( P.MCMC[[3]]$pars )
+ P_all_MC4 <- as.mcmc( P.MCMC[[4]]$pars )
+ 
+ combo <- mcmc.list(P_all_MC1, P_all_MC2, P_all_MC3, P_all_MC4)                    
+ gelman.diag(combo)
+ heidel.diag(combo)
+ gelman.plot(combo)
+ 
+ 
+ 
+ # best par according to FME
+ mcfit1a <- Pred_sim(P.MCMC[[1]]$bestpar)
+ mcfit1b <- Pred_sim(P.MCMC[[2]]$bestpar)
+ mcfit1c <- Pred_sim(P.MCMC[[3]]$bestpar)
+ mcfit1d <- Pred_sim(P.MCMC[[4]]$bestpar)
+ ssr_a <- pcost1(P.MCMC[[1]]$bestpar)
+ ssr_b <- pcost1(P.MCMC[[2]]$bestpar)
+ ssr_c <- pcost1(P.MCMC[[3]]$bestpar)
+ ssr_d <- pcost1(P.MCMC[[4]]$bestpar)
+ P.MCMC[[1]]$bestpar
+ P.MCMC[[2]]$bestpar
+ P.MCMC[[3]]$bestpar
+ P.MCMC[[4]]$bestpar
+ sum(ssr_a)
+ sum(ssr_b)
+ sum(ssr_c)
+ sum(ssr_d)
+ bestfun_a <- mcmc.fun(P.MCMC[[1]]$bestpar)
+ bestfun_a
+ bestfun_b <- mcmc.fun(P.MCMC[[2]]$bestpar)
+ bestfun_b
+ bestfun_c <- mcmc.fun(P.MCMC[[3]]$bestpar)
+ bestfun_c
+ bestfun_d <- mcmc.fun(P.MCMC[[4]]$bestpar)
+ bestfun_d
+ ppp <- tibble(kform=as.numeric(c(P.MCMC[[1]]$bestpar[1], P.MCMC[[2]]$bestpar[1], P.MCMC[[3]]$bestpar[1], P.MCMC[[4]]$bestpar[1])),
+               CLp=as.numeric(c(P.MCMC[[1]]$bestpar[2], P.MCMC[[2]]$bestpar[2], P.MCMC[[3]]$bestpar[2], P.MCMC[[4]]$bestpar[2])),
+                CLalc=as.numeric(c(P.MCMC[[1]]$bestpar[3], P.MCMC[[2]]$bestpar[3], P.MCMC[[3]]$bestpar[3], P.MCMC[[4]]$bestpar[3])),
+               CLrapid=as.numeric(c(P.MCMC[[1]]$bestpar[4], P.MCMC[[2]]$bestpar[4], P.MCMC[[3]]$bestpar[4], P.MCMC[[4]]$bestpar[3])),
+               sig2=as.numeric(c(P.MCMC[[1]]$bestpar[5], P.MCMC[[2]]$bestpar[5], P.MCMC[[3]]$bestpar[5], P.MCMC[[4]]$bestpar[5]))
+               )
+ 
+
+ # par with lowest neg log likelihood 
+ lowSS_a <- P.MCMC[[1]]$pars[which.min(P.MCMC[[1]]$SS),]
+ LL_low_a <- mcmc.fun(lowSS_a)
+ LL_low_a
+ lowf_a <- pcost1(lowSS_a)
+ sum(lowf_a)
+ mcfit2a <- Pred_sim(lowSS_a)
+ 
+ lowSS_b <- P.MCMC[[2]]$pars[which.min(P.MCMC[[2]]$SS),]
+ LL_low_b <- mcmc.fun(lowSS_b)
+ LL_low_b 
+ LL_ss_b <- pcost1(lowSS_b)
+ sum(LL_ss_b)
+ mcfit2b <- Pred_sim(lowSS_b)
+ 
+ lowSS_c <- P.MCMC[[3]]$pars[which.min(P.MCMC[[3]]$SS),]
+ LL_low_c <- mcmc.fun(lowSS_c)
+ LL_low_c 
+ LL_ss_c <- pcost1(lowSS_c)
+ sum(LL_ss_c)
+ mcfit2c <- Pred_sim(lowSS_b)
+ 
+ lowSS_d <- P.MCMC[[4]]$pars[which.min(P.MCMC[[4]]$SS),]
+ LL_low_d <- mcmc.fun(lowSS_d)
+ LL_low_d 
+ LL_ss_d <- pcost1(lowSS_d)
+ sum(LL_ss_d)
+ mcfit2d <- Pred_sim(lowSS_d)
+  ppp <- tibble(kform=as.numeric(c(P.MCMC[[1]]$bestpar[1], lowSS_a[1], P.MCMC[[2]]$bestpar[1], lowSS_b[1],
+                                   P.MCMC[[3]]$bestpar[1], lowSS_c[1], P.MCMC[[4]]$bestpar[1], lowSS_d[1])),
+               CLp=as.numeric(c(P.MCMC[[1]]$bestpar[2], lowSS_a[2], P.MCMC[[2]]$bestpar[2], lowSS_b[2],
+                                P.MCMC[[3]]$bestpar[2], lowSS_c[2], P.MCMC[[4]]$bestpar[2], lowSS_d[2])),
+               CLrapid=as.numeric(c(P.MCMC[[1]]$bestpar[3], lowSS_a[3], P.MCMC[[2]]$bestpar[3], lowSS_b[3],
+                                P.MCMC[[3]]$bestpar[3], lowSS_c[3], P.MCMC[[4]]$bestpar[3], lowSS_d[3])),
+               sig2=as.numeric(c(P.MCMC[[1]]$bestpar[4], lowSS_a[4], P.MCMC[[2]]$bestpar[4], lowSS_b[4],
+                                    P.MCMC[[3]]$bestpar[4], lowSS_c[4], P.MCMC[[4]]$bestpar[4],  lowSS_d[4]))
+ )
+              
+P.MCMC[[1]]$naccepted/200000
+P.MCMC[[2]]$naccepted/200000
+P.MCMC[[3]]$naccepted/200000
+P.MCMC[[4]]$naccepted/200000
+start_pred <- Pred_sim(start_pars)
+
+ ggplot() +
+  geom_point(aes(x=time, y=Pconc2*701.7), data=obs_real) +
+  geom_line(aes(x=time, y=Pconc2*701.7), data=obs_real, linetype=2, linewidth=0.4) +
+  #geom_point(aes(x=time, y=Pconc2), data=amend, color="violet", alpha=0.3) +
+  #geom_line(aes(x=time, y=Pconc2), data=amend, color="violet", linetype=2, alpha=0.3) +
+  geom_line(aes(x=time, y=Pconc*701.7), data=mcfit1a, color="blue") +
+   geom_line(aes(x=time, y=Pconc*701.7), data=mcfit1b, color="blue", linetype=2) +
+   geom_line(aes(x=time, y=Pconc*701.7), data=mcfit1c, color="blue", linetype=3) +
+   geom_line(aes(x=time, y=Pconc*701.7), data=mcfit1d, color="blue", linetype=4) +
+  geom_line(aes(x=time, y=Pconc*701.7), data=mcfit2a, color="tomato") +
+   geom_line(aes(x=time, y=Pconc*701.7), data=mcfit2b, color="tomato", linetype=2) +
+   geom_line(aes(x=time, y=Pconc*701.7), data=mcfit2c, color="tomato", linetype=3) +
+    geom_line(aes(x=time, y=Pconc*701.7), data=mcfit2d, color="tomato", linetype=4) +
+   #geom_line(aes(x=time, y=Pconc*701.7), data=start_pred, color="deepskyblue3") +
+   scale_y_log10("PEth 16:0/18:1 (ng/ml)") +
+  ggtitle(paste0(id[idx], " MCMC fit ", mname)) +
+   labs(caption="black: data; blue: bestpar (4 chains); red: MLE (4 chains" )
+ 
+ ggplot() +
+  geom_point(aes(x=time, y=Pconc2*701.7), data=obs_real) +
+  geom_line(aes(x=time, y=Pconc2*701.7), data=obs_real, linetype=2, linewidth=0.4) +
+  #geom_point(aes(x=time, y=Pconc2), data=amend, color="violet", alpha=0.3) +
+  #geom_line(aes(x=time, y=Pconc2), data=amend, color="violet", linetype=2, alpha=0.3) +
+  geom_line(aes(x=time, y=Pconc*701.7), data=mcfit1a, color="blue") +
+   geom_line(aes(x=time, y=Pconc*701.7), data=mcfit1b, color="blue", linetype=2) +
+   geom_line(aes(x=time, y=Pconc*701.7), data=mcfit1c, color="blue", linetype=3) +
+   geom_line(aes(x=time, y=Pconc*701.7), data=mcfit1d, color="blue", linetype=4) +
+  geom_line(aes(x=time, y=Pconc*701.7), data=mcfit2a, color="tomato") +
+   geom_line(aes(x=time, y=Pconc*701.7), data=mcfit2b, color="tomato", linetype=2) +
+   geom_line(aes(x=time, y=Pconc*701.7), data=mcfit2c, color="tomato", linetype=3) +
+    geom_line(aes(x=time, y=Pconc*701.7), data=mcfit2d, color="tomato", linetype=4) +
+   #geom_line(aes(x=time, y=Pconc*701.7), data=start_pred, color="deepskyblue3") +
+   scale_y_log10("PEth 16:0/18:1 (ng/ml)") +
+   scale_x_continuous(limits=c(0,120)) +
+  ggtitle(paste0(id[idx], " MCMC fit ", mname)) +
+   labs(caption="black: data; blue: bestpar (4 chains); red: MLE (4 chains" )
+```
+
+mc fit of day 1
+
+```{r}
+#################
+# these pars are the AIC-weighted mu values from "Pmod2-indiv-fits-111922.xlsx" on the individual sheet T17:Y17
+avg_mu_pars <- c(kform = -5.3563,
+                 CLp = -1.1539,
+                 CLrapid = -2.5600,
+                 sig2 = 0.5
+                 )
+
+d1_initfit <- Pred_sim(avg_mu_pars)
+ggplot() +
+  geom_point(aes(x=time, y=Pconc2*701.7), data=day1_real) +
+  geom_line(aes(x=time, y=Pconc2*701.7), data=day1_real, linetype=2, linewidth=0.4) +
+  geom_line(aes(x=time, y=Pconc*701.7), data=d1_initfit, color="tomato") +
+  #geom_line(aes(x=time, y=Pconc*701.7), data=AUC_fit_d1r, color="green") +
+  scale_y_log10("PEth 16:0/18:1 (ng/ml)") +
+  scale_x_continuous(limits=c(0,24)) +
+  ggtitle(paste0(id[idx]," Model 1b_2, day 1")) 
+   
+
+
+spread.d <- 4
+spread.u <- 4
+pRanges_d1 <- data.frame(min = c(avg_mu_pars[1:3] - spread.d, sig2=0.01),
+                        max = c(avg_mu_pars[1:3] + spread.u, sig2=3.3))
+
+indiv_dat$Pstart <- day1_real$Pconc2[1]
+
+Pred_d1 <- function(pars) {
+  out<-Pmod %>% param(pars) %>% data_set(d_obs) %>% idata_set(indiv_dat) %>%
+    mrgsim_df(start=0, end=24, delta=24, 
+           add=c(0.25, 0.5, 0.75, 1, 1.5, 2, 6), 
+           atol=1e-30, mxhnil=0, hmin=1e-30, maxsteps=50000)
+  out[2:nrow(out),]
+}
+Pred_sim_d1 <- function(pars) {
+  out<- Pmod %>% param(pars) %>% data_set(d_obs) %>% idata_set(indiv_dat) %>%
+    mrgsim_df(start=0, end=24, delta=0.25, 
+           atol=1e-30, mxhnil=0, hmin=1e-20, maxsteps=50000)
+  out[2:nrow(out),]
+}
+
+d1_mcmc.fun <- function(pars) {
+  pars.data <- pars[-which_sig]
+  names(pars.data) <- names(pars.data)
+  out <- Pred_d1(pars.data)
+  yhat <- out$Pconc
+  log.yhat <- log(yhat)
+  log.y <- log(day1_real$Pconc2)
+  sig <- rep(exp(as.numeric(pars[which_sig])),9)
+  log_likelihood <- -2*sum((dnorm(log.y, mean=log.yhat, sd = sig, log=TRUE)))
+  return(log_likelihood)
+}
+
+pcost_d1 <- function (pars){
+  out <- Pred_d1(pars)
+  obs <- day1_real
+  cost <- (day1_real$Pconc2 - out$Pconc)^2
+  return(cost)
+}
+d1_MCMC <-
+    modMCMC(f             = d1_mcmc.fun, 
+            p             = avg_mu_pars,
+            niter         = 200000,           ## iteration number 
+            lower = c(pRanges_d1$min),
+            upper = c(pRanges_d1$max),
+            jump          = 0.01,             ## jump function generation using covariate matrix
+            prior         = Prior,            ## prior function
+            updatecov     = 50,               ## Adaptive Metropolis
+            var0          = NULL,             ## initial model variance;
+            wvar0         = 0.01,             ## "Weight" for the initial model variance
+            ntrydr        = 2,              ## Delayed Rejection
+            burninlength  = 60000,          ## number of initial iterations to be removed from output.
+            outputlength  = 10000,
+            verbose       = 1000
+            )
+
+ 
+ 
+ LL_best_d1 <- d1_mcmc.fun(d1_MCMC$bestpar)
+ LL_best_d1
+ sum(pcost_d1(d1_MCMC$bestpar))
+ mcfit1_d1 <- Pred_sim_d1(d1_MCMC$bestpar)
+ lowSS_d1 <- d1_MCMC$pars[which.min(d1_MCMC$SS),]
+ lowSS_d1
+ LL_low_d1 <- d1_mcmc.fun(d1_MCMC$bestpar)
+ LL_low_d1
+ sum(pcost_d1(lowSS_d1))
+ mcfit2_d1 <- Pred_sim_d1(lowSS_d1)
+ 
+ d1_MCMC$bestpar
+ lowSS_d1
+ 
+AUC_EtOH <- trapz(mcfit2_d1$time, mcfit2_d1$Central)
+ ggplot() +
+   geom_point(aes(x=time, y=BrAC_mM), data=day1_real) +
+   geom_line(aes(x=time, y=Central), data=mcfit2_d1) +
+   scale_x_continuous(limits=c(0,24)) +
+   ggtitle(paste0(id[idx], " MCMC day 1 fit ", mname, " ",  sprintf("%3.3f",AUC_EtOH)))
+ 
+ ggplot() +
+  geom_point(aes(x=time, y=Pconc2*701.7), data=day1_real) +
+  geom_line(aes(x=time, y=Pconc2*701.7), data=day1_real, linetype=2, linewidth=0.4) +
+  geom_line(aes(x=time, y=Pconc*701.7), data=mcfit1_d1, color="blue") +
+  geom_line(aes(x=time, y=Pconc*701.7), data=mcfit2_d1, color="tomato") +
+  #geom_line(aes(x=time, y=Pconc*701.7), data=AUC_fit_d1r, color="green") +
+  scale_y_log10("PEth 16:0/18:1 (ng/ml)") +
+  scale_x_continuous(limits=c(0,24)) +
+  ggtitle(paste0(id[idx], " MCMC day 1 fit ", mname)) +
+   labs(caption="black: data @ 0 and 2 hr; blue: bestpar; red: MLE")
+ 
+ 
+
+```
+
+mcmc fit day5
+
+```{r}
+d5_pars <- avg_mu_pars #c(kform = 0.4976, CLp = 2.4761, CLfix= 0.0035, CLrapid = 5.9267, VR2 = -0.5368, sig2 = 0.5)
+
+which_sig <- 4
+spread.d <- 4
+spread.u <- 4
+pRanges_d5 <- data.frame(min = c(d5_pars[1:3] - spread.d, sig2=0.01),
+                        max = c(d5_pars[1:3] + spread.u, sig2=3.3))
+
+indiv_dat$Pstart <- day5_real$Pconc2[1]
+
+day5_real <-   mutate(day5_real, newtime = time-96)
+
+Pred_d5 <- function(pars) {
+  out<- Pmod %>% param(pars) %>% data_set(d_obs) %>% idata_set(indiv_dat) %>%
+    mrgsim_df(start=0, end=24, delta=24, 
+           add=c(0.25, 0.5, 0.75, 1, 1.5, 2, 6), 
+           atol=1e-30, mxhnil=0, hmin=1e-30, maxsteps=50000)
+  out[2:nrow(out),]
+}
+Pred_sim_d5 <- function(pars) {
+  out<- Pmod %>% param(pars) %>% data_set(d_obs) %>% idata_set(indiv_dat) %>%
+    mrgsim_df(start=0, end=24, delta=0.25, 
+           atol=1e-30, mxhnil=0, hmin=1e-30, maxsteps=50000)
+  out[2:nrow(out),]
+}
+
+d5_mcmc.fun <- function(pars) {
+  pars.data <- pars[-which_sig]
+  names(pars.data) <- names(pars.data)
+  out <- Pred_d5(pars.data)
+  yhat <- out$Pconc
+  log.yhat <- log(yhat)
+  log.y <- log(day5_real$Pconc2)
+  sig <- rep(exp(as.numeric(pars[which_sig])),9)
+  log_likelihood <- -2*sum((dnorm(log.y, mean=log.yhat, sd = sig, log=TRUE)))
+  return(log_likelihood)
+}
+
+pcost_d5 <- function (pars){
+  out <- Pred_d5(pars)
+  cost <- (day5_real$Pconc2 - out$Pconc)^2
+  return(cost)
+}
+
+d5_mcmc.fun(d5_pars)
+sum(pcost_d5(d5_pars))
+Prior(d5_pars)
+
+d5_MCMC <-
+    modMCMC(f             = d5_mcmc.fun, 
+            p             = d5_pars,
+            niter         = 200000,           ## iteration number 
+           lower = pRanges_d5$min,
+            upper = pRanges_d5$max,
+            jump          = 0.01,             ## jump function generation using covariate matrix
+            prior         = Prior,            ## prior function
+            updatecov     = 50,               ## Adaptive Metropolis
+            var0          = NULL,             ## initial model variance;
+            wvar0         = 0.01,             ## "Weight" for the initial model variance
+            ntrydr        = 2,              ## Delayed Rejection
+            burninlength  = 60000,          ## number of initial iterations to be removed from output.
+            outputlength  = 10000,
+            verbose       = 1000
+            )
+
+ 
+ d5_MCMC$bestpar
+ LL_best_d5 <- d5_mcmc.fun(d5_MCMC$bestpar)
+ LL_best_d5
+ sum(pcost_d5(d5_MCMC$bestpar))
+ mcfit1_d5 <- Pred_sim_d5(d5_MCMC$bestpar)
+ lowSS_d5 <- d5_MCMC$pars[which.min(d5_MCMC$SS),]
+ LL_low_d5 <- d5_mcmc.fun(lowSS_d5)
+ LL_low_d5
+  sum(pcost_d5(lowSS_d5))
+ mcfit2_d5 <- Pred_sim_d5(lowSS_d5)
+
+ d5_MCMC$bestpar
+ lowSS_d5
+ 
+ 
+ ggplot() +
+  geom_point(aes(x=newtime, y=Pconc2*701.7), data=day5_real) +
+  geom_line(aes(x=newtime, y=Pconc2*701.7), data=day5_real, linetype=2, linewidth=0.4) +
+  geom_line(aes(x=time, y=Pconc*701.7), data=mcfit1_d5, color="blue") +
+  geom_line(aes(x=time, y=Pconc*701.7), data=mcfit2_d5, color="tomato") +
+  scale_y_log10("PEth 16:0/18:1 (ng/ml)") +
+  scale_x_continuous("Time (hr)") +
+  ggtitle(paste0(id[idx], " MCMC day 5 fit ", mname)) +
+   labs(caption="black: data @ 0 and 2 hr; blue: bestpar; red: MLE")
+ 
+```
+
+refinement of days 1 and 5
+
+```{r}
+######## choose these #####
+dd <- 5
+var_alc15 <- 0
+###########################
+which_sig <- 4
+
+#pars and ranges
+
+d15_par <- c(kform = -5.3584,
+             CLp = -2.5354,
+             CLrapid = -6.0709,
+           sig2 = 0.5 )
+
+Pred_sim_d15 <- function(pars) {
+  out<- Pmod %>% param(pars) %>% data_set(d_obs) %>% idata_set(indiv_dat) %>%
+    mrgsim_df(start=t_start, end = t_end, delta=0.25, 
+           atol=1e-30, mxhnil=0, hmin=1e-20, maxsteps=50000)
+  out[2:nrow(out),]
+}
+
+
+##
+
+if (dd==1) { 
+  obsP <- day1_real[c(1,7,9),]
+  t_start <- 0
+  t_end <- 24
+  t_add <- 2
+  indiv_dat$Pstart <- obsP$Pconc2[1]
+  if (var_alc15==1) {
+    indiv_dat$ke <- alc_day_pars$ke[1]
+    indiv_dat$ks <- alc_day_pars$ks[1]
+    indiv_dat$ka <- alc_day_pars$ka[1]
+    indiv_dat$Vmax <- alc_day_pars$Vmax[1]
+    indiv_dat$Km <- alc_day_pars$Km[1]
+    indiv_dat$CLd <- alc_day_pars$CLd[1]
+    indiv_dat$Vcent <- alc_day_pars$Vcent[1]
+    indiv_dat$Vtissue <- alc_day_pars$Vtissue[1]
+  }
+} else {
+  obsP <- day5_real[c(1,7,9),]
+  t_start <- 0
+  t_end <- 24
+  t_add <- 2
+  for (i in (1:nrow(obsP))) { obsP$time[i] <- obsP$time[i] - 96 }
+  indiv_dat$Pstart <- obsP$Pconc2[1]
+  if (var_alc15==1) {
+    indiv_dat$ke <- alc_day_pars$ke[5]
+    indiv_dat$ks <- alc_day_pars$ks[5]
+    indiv_dat$ka <- alc_day_pars$ka[5]
+    indiv_dat$Vmax <- alc_day_pars$Vmax[5]
+    indiv_dat$Km <- alc_day_pars$Km[5]
+    indiv_dat$CLd <- alc_day_pars$CLd[5]
+    indiv_dat$Vcent <- alc_day_pars$Vcent[5]
+    indiv_dat$Vtissue <- alc_day_pars$Vtissue[5]
+  }
+}
+
+Pred_d15 <- function(pars) {
+  out<- Pmod %>% param(pars) %>% data_set(d_obs) %>% idata_set(indiv_dat) %>%
+    mrgsim_df(start=0, end=24, delta=24, 
+           add=2,
+           atol=1e-30, mxhnil=0, hmin=1e-20, maxsteps=100000)
+  out[c(1,3,4),]
+}
+
+pcost_d15 <- function (pars){
+  out <- Pred_d15(pars)
+  cost <- (obsP$Pconc2 - out$Pconc)^2
+  return(cost)
+}
+testsim <- Pred_sim_d15(d15_par)
+sum(pcost_d15(d15_par))
+
+ggplot() +
+  geom_point(aes(x=time, y=Pconc2*701.7), data=obsP) +
+  geom_line(aes(x=time, y=Pconc2*701.7), data=obsP) +
+  geom_line(aes(x=time, y=Pconc*701.7), data=testsim, color="blue")  +
+  scale_y_log10("PEth 16:0/18:1 (ng/ml)") +
+  scale_x_continuous(limits=c(t_start, t_end)) +
+  ggtitle(paste0(id[idx], " day ", dd, " ", mname, " refit with global SA")) 
+
+```
+
+
+```{r}
+d15_mcmc.fun <- function(pars) {
+  pars.data <- pars[-which_sig]
+  names(pars.data) <- names(pars.data)
+  out <- Pred_d15(pars.data)
+  yhat <- out$Pconc
+  log.yhat <- log(yhat)
+  log.y <- log(obsP$Pconc2)
+  sig <- rep(0.5,3)
+  log_likelihood <- -2*sum((dnorm(log.y, mean=log.yhat, sd = sig, log=TRUE)))
+  return(log_likelihood)
+}
+
+sum(pcost_d15(d15_par))
+d15_mcmc.fun(d15_par)
+
+######### generation of SA par sets ####
+nruns <- 10000
+spread.u <- 5
+spread.d <- 5
+parRanges <- data.frame(min = d15_par[1:3] - spread.d,
+                        max = d15_par[1:3] + spread.u)
+sig2p <- tibble(min=0.01, max=3.3)
+parRanges <- bind_rows(parRanges, sig2p)
+row.names(parRanges) <- c("kform", "CLp", "CLrapid", "sig2")
+
+sR_d15 <- sensRange(func=Pred_d15, parms=d15_par, dist="latin", sensvar="Pconc", parRange=parRanges, num=nruns)
+  
+# create parameter matrix
+#summ.sR_all15 <- summary(sR_all15)
+
+sR_pars15 <- sR_d15[,1:3]
+costs15 <- double(length=nruns)
+pcosts15 <- double(length=nruns)
+
+ix <- integer(length=nruns)
+df <- tibble(ix=0, LL=0, ss=0, ss_a=0, kform=0, CLp=0, CLrapid=0)
+for (i in 1:nruns) { 
+  costs15[i] <- d15_mcmc.fun(sR_d15[i,1:3])
+  pcosts15[i] <- sum(pcost_d15(sR_d15[i,1:3]))
+  
+}
+c_thrshld <- quantile(costs15, 0.2, na.rm=TRUE)
+pc_thrshld <- quantile(pcosts15, 0.2, na.rm=TRUE)
+
+jj <- which(costs15<c_thrshld)
+kk <- which(pcosts15<pc_thrshld)
+nn <- setdiff(jj,kk)
+df_use15 <- sR_pars15[c(jj,nn),]
+
+# calculate best fit pars from s$_pars15
+sres15 <- tibble(time = c(t_start, t_add, t_end))
+AUC15 <- double(length(jj))
+for (i in 1:length(jj)) {
+  sp <- df_use15[i, ]
+   sfit15 <- Pred_d15(sp)$Pconc
+   time = c(t_start, t_add, t_end)
+   AUC15[i] <- trapz(time, sfit15)
+   sres15 <- bind_cols(sres15, pc=sfit15, .name_repair="minimal")
+}
+
+AUC_med <- median(AUC15)
+i_med <- which.min(abs(AUC15 - AUC_med))
+
+#srm_cost15 <- function(pars) {
+#out <- Pred_d15(pars)
+#  cost <- (summ.sR_all15$q50 - out$Pconc)^2
+#  return(cost)
+#}
+#fit_srm15 <- modFit(srm_cost15, d15_p[1:4], method="Nelder-Mead", lower = parRanges$min, upper = parRanges$max)
+#fitm15 <- fit_srm15$par
+
+best15 <- which.min(costs15[jj])
+bestssr15 <- which.min(pcosts15[kk])
+
+#fitm15
+#sum(pcost_d15(fitm15))
+
+bestp15 <- c(kform = as.numeric(df_use15[best15,1]),
+           CLp = as.numeric(df_use15[best15,2]),
+           CLrapid = as.numeric(df_use15[best15,3]),
+           sig2 = 0.5)
+bestp15
+sum(pcost_d15(bestp15))
+bestss15 <- c(kform = as.numeric(df_use15[bestssr15,1]),
+           CLp = as.numeric(df_use15[bestssr15,2]),
+           CLrapid = as.numeric(df_use15[bestssr15,3]),
+           sig2 = 0.5)
+bestss15
+sum(pcost_d15(bestss15))
+
+auc_choice15 <- c(kform = as.numeric(df_use15[i_med,1]),
+              CLp = as.numeric(df_use15[i_med,2]),
+              CLrapid = as.numeric(df_use15[i_med,3]),
+              sig2 = 0.5)
+auc_choice15
+sum(pcost_d15(auc_choice15))
+
+#d15_mcmc.fun(c(fitm15, sig2=0.5))
+d15_mcmc.fun(bestp15)
+d15_mcmc.fun(bestss15)
+d15_mcmc.fun(auc_choice15)
+
+Pfit_auc1 <- modFit(pcost_d15, bestp15, method="Marq", lower = parRanges$min, upper = parRanges$max)
+Pfit_auc2 <- modFit(pcost_d15, Pfit_auc1$par, method="CG", lower = parRanges$min, upper = parRanges$max)
+Pfit_auc3 <- modFit(pcost_d15, Pfit_auc2$par, method="bobyqa", lower = parRanges$min, upper = parRanges$max)
+Pfit_auc4 <- modFit(pcost_d15, Pfit_auc3$par, method="Nelder-Mead",
+   lower = parRanges$min, upper = parRanges$max)
+
+Pfit_auc1$par
+
+Pfit_auc2$par
+
+Pfit_auc3$par
+
+Pfit_auc4$par
+
+#fitm15res <- Pred_sim_d15(fitm15)
+bestres15 <- Pred_sim_d15(bestp15)
+bestols15 <- Pred_sim_d15(bestss15)
+auc_fit15 <- Pred_sim_d15(Pfit_auc4$par)
+
+sum(pcost_d15(Pfit_auc4$par))
+
+ddd15 <- tibble()
+ddd15 <- bind_rows(bestp15, bestss15, auc_choice15)
+
+if(var_alc15==1) {
+  subt <- "daily EtOH pars"
+} else {
+  subt <- "median EtOH pars"
+}
+ggplot() +
+  geom_point(aes(x=time, y=Pconc2*701.7), data=obsP) +
+  geom_line(aes(x=time, y=Pconc2*701.7), data=obsP) +
+  geom_line(aes(x=time, y=Pconc*701.7), data=bestres15, color="blue") +
+  geom_line(aes(x=time, y=Pconc*701.7), data=bestols15, color="darkorchid") +
+  geom_line(aes(x=time, y=Pconc*701.7), data=auc_fit15, color="tomato") +
+  #geom_line(aes(x=time, y=Pconc*701.7), data=fitm15res, color="green") +
+  scale_y_log10("PEth 16:0/18:1 (ng/ml)") +
+  scale_x_continuous(limits=c(t_start, t_end)) +
+  ggtitle(paste0(id[idx], " day ", dd, mname, " refit with global SA")) +
+  labs(subtitle = subt, caption = "blue: MLE; violet: OLS; red: auc match; green: fit SA median")
+
+```
+
+# functions for individual day fits
+
+```{r}
+# ind par should be mean of day234 best, lowSS 
+# need to change mrgmodel above to set Pconc2=Pstart at hr 24
+###### enter 2, 3, or 4 for days
+day <- 4
+var_alc <- 0
+###########
+indiv_dat <- read.csv("../alc_pars/EtOH_jan23_Mod1pref_idata.csv")[idx,]
+
+##### enter a set of up to 4 numbers in 1:5 for par id
+#functions for individual days 2, 3, 4 fit to the amended dataset
+d_par <- avg_mu_pars
+
+
+day_mcmc.fun <- function(pars) {
+  if (day==2) { y <- obs_real$Pconc2[4:6] }
+  if (day==3) { y <- obs_real$Pconc2[6:8] }
+  if (day==4) { y <- obs_real$Pconc2[8:10] }
+  pars.data <- pars[-which_sig]
+  names(pars.data) <- names(pars.data)
+  out <- Pred_day(pars.data)
+  yhat <- out$Pconc
+  log.yhat <- log(yhat)
+  log.y <- log(y)
+  sig <- rep(1.65,3)
+  log_likelihood <- -2*sum((dnorm(log.y, mean=log.yhat, sd = sig, log=TRUE)))
+  return(log_likelihood)
+}
+
+if (day==2) {
+  indiv_dat$Pstart <- obs_real$Pconc2[4]
+  alc <- obs[9:17,c(4,17)]
+  if (var_alc==1) {
+    indiv_dat$ke <- alc_day_pars$ke[2]
+    indiv_dat$ks <- alc_day_pars$ks[2]
+    indiv_dat$ka <- alc_day_pars$ka[2]
+    indiv_dat$Vmax <- alc_day_pars$Vmax[2]
+    indiv_dat$Km <- alc_day_pars$Km[2]
+    indiv_dat$CLd <- alc_day_pars$CLd[2]
+    indiv_dat$Vcent <- alc_day_pars$Vcent[2]
+    indiv_dat$Vtissue <- alc_day_pars$Vtissue[2]
+  }
+  t_start <- 24
+  t_end <- 48
+  t_add <- 26
+  t_amend <- c(25,26,30)
+}
+
+if (day==3) {
+  indiv_dat$Pstart <- obs_real$Pconc2[6]
+  alc <- obs[17:25,c(4,17)]
+  if (var_alc==1) {
+    indiv_dat$ke <- alc_day_pars$ke[3]
+    indiv_dat$ks <- alc_day_pars$ks[3]
+    indiv_dat$ka <- alc_day_pars$ka[3]
+    indiv_dat$Vmax <- alc_day_pars$Vmax[3]
+    indiv_dat$Km <- alc_day_pars$Km[3]
+    indiv_dat$CLd <- alc_day_pars$CLd[3]
+    indiv_dat$Vcent <- alc_day_pars$Vcent[3]
+    indiv_dat$Vtissue <- alc_day_pars$Vtissue[3]
+  }
+  t_start <- 48
+  t_end <- 72
+  t_add <- 50
+  t_amend <- c(49,50,54)
+}
+
+if (day==4) {
+  indiv_dat$Pstart <- obs_real$Pconc2[8]
+  alc <- obs[25:33,c(4,17)]
+  if (var_alc==1) {
+    indiv_dat$ke <- alc_day_pars$ke[4]
+    indiv_dat$ks <- alc_day_pars$ks[4]
+    indiv_dat$ka <- alc_day_pars$ka[4]
+    indiv_dat$Vmax <- alc_day_pars$Vmax[4]
+    indiv_dat$Km <- alc_day_pars$Km[4]
+    indiv_dat$CLd <- alc_day_pars$CLd[4]
+    indiv_dat$Vcent <- alc_day_pars$Vcent[4]
+    indiv_dat$Vtissue <- alc_day_pars$Vtissue[4]
+  }
+  t_start <- 72
+  t_end <- 96
+  t_add <- 74
+  t_amend <- c(97,98,102)
+}
+
+Pred_day <- function(pars) {
+  d_obs$time <- t_start
+  d_obs$addl <- 1
+  out<- Pmod %>% param(pars) %>% 
+    data_set(d_obs) %>% idata_set(indiv_dat) %>%
+    mrgsim_df(start=t_start, end=t_end, delta=24, 
+           add=t_add, 
+           atol=1e-30, mxhnil=0, hmin=1e-20, maxsteps=100000)
+  out[2:nrow(out),]
+}
+Pred_day_amend <- function(pars) {
+  d_obs$time <- t_start
+  d_obs$addl <- 1
+  out<-  Pmod %>% param(pars) %>% 
+    data_set(d_obs) %>% idata_set(indiv_dat) %>%
+    mrgsim_df(start=t_start, end=t_end, delta=24, 
+           add=t_amend, 
+           atol=1e-30, mxhnil=0, hmin=1e-20, maxsteps=50000)
+  out[2:nrow(out),]
+}
+Pred_sim_day <- function(pars) {
+  d_obs$time <- t_start
+  out<- Pmod %>% param(pars) %>%  
+    data_set(d_obs) %>% idata_set(indiv_dat) %>%
+    mrgsim_df(start=t_start, end=t_end, delta=0.25, 
+           atol=1e-30, mxhnil=0, hmin=1e-20, maxsteps=50000)
+  out[2:nrow(out),]
+}
+
+pcost <- function(par) {
+  if (day==2) cost <-sum((obs_real$Pconc2[4:6] - Pred_day(par)$Pconc)^2)
+   if (day==3) cost <-sum((obs_real$Pconc2[6:8] - Pred_day(par)$Pconc)^2)
+    if (day==4) cost <-sum((obs_real$Pconc2[8:10] - Pred_day(par)$Pconc)^2)
+    return(cost)
+}
+pcost_day <- function(par) {
+  if (day==2) cost <-((obs_real$Pconc2[4:6] - Pred_day(par)$Pconc)^2)
+   if (day==3) cost <-((obs_real$Pconc2[6:8] - Pred_day(par)$Pconc)^2)
+    if (day==4) cost <-((obs_real$Pconc2[8:10] - Pred_day(par)$Pconc)^2)
+    return(cost)
+}
+pcost_day_amend<- function(par) {
+  if (day==2) cost <-((amend$Pconc2[5:9] - Pred_day_amend(par)$Pconc)^2)
+   if (day==3) cost <-((amend$Pconc2[9:13] - Pred_day_amend(par)$Pconc)^2)
+    if (day==4) cost <-((amend$Pconc2[13:17] - Pred_day_amend(par)$Pconc)^2)
+    return(cost)
+}
+prng <- data.frame(min = c(d_par[1:3] - 2, 0.01),
+                        max = c(d_par[1:3] + 2, 3.3)
+)
+day_fit <- modFit(pcost_day, d_par, method="CG", lower=prng$min, upper=prng$max)
+zero_fit <- Pred_sim_day(d_par)
+init_fit <- Pred_sim_day(day_fit$par)
+
+# now sensitivity analysis
+# get parameters for sensitivity
+## change interval and param source
+
+spread.u <- 4
+spread.d <- 4
+use_p <- day_fit$par
+
+parRanges <- data.frame(min = c(use_p[1:3] - spread.d, sig2 = 0.01),
+                        max = c(use_p[1:3] + spread.u, sig2 = 3.3)
+)
+
+#########
+nruns <- 8000
+sR_all <- sensRange(func=Pred_day, parms=day_fit$par, dist="latin", sensvar="Pconc", parRange=parRanges, num=nruns)    
+# create parameter matrix
+sR_pars <- sR_all[,1:5]
+costs <- double(length=nruns)
+pcosts <- double(length=nruns)
+pcosts_a <- double(length=nruns)
+ix <- integer(length=nruns)
+df <- tibble(ix=0, LL=0, ss=0, ss_a=0, kform=0, CLp=0, CLrapid=0)
+for (i in 1:nruns) { 
+  costs[i] <- day_mcmc.fun(sR_all[i,1:3])
+  pcosts[i] <- sum(pcost_day(sR_all[i,1:3]))
+  pcosts_a[i] <- sum(pcost_day_amend(sR_all[i,1:3]))
+}
+c_thrshld <- quantile(costs, 0.2, na.rm=TRUE)
+pc_thrshld <- quantile(pcosts, 0.2, na.rm=TRUE)
+am_thrshld <- quantile(pcosts_a, 0.2, na.rm=TRUE)
+jj <- which(costs<c_thrshld)
+kk <- which(pcosts<pc_thrshld)
+mm <- which(pcosts_a<am_thrshld)
+nn <- setdiff(jj,kk)
+oo <- setdiff(nn,mm)
+df_to_use <- sR_pars[c(jj,nn,oo),]
+# calculate 
+
+sres <- tibble(time = c(t_start, t_add, t_end))
+AUC <- double(length(jj))
+for (i in 1:length(jj)) {
+  sp <- df_to_use[i, ]
+   sfit <- Pred_day(sp)$Pconc
+   time = c(t_start, t_add, t_end)
+   AUC[i] <- trapz(time, sfit)
+   sres <- bind_cols(sres, pc=sfit, .name_repair="minimal")
+}
+
+AUC_med <- median(AUC)
+AUC_lo <- quantile(AUC, 0.05)
+AUC_hi <- quantile(AUC, 0.95)
+i_med <- which.min(abs(AUC - AUC_med))
+
+best <- which.min(costs[jj])
+bestssr <- which.min(pcosts[kk])
+bestssa <- which.min(pcosts_a[mm])
+bestp <- c(kform = as.numeric(df_to_use[best,1]),
+           CLp = as.numeric(df_to_use[best,2]),
+           CLrapid = as.numeric(df_to_use[best,3]),
+           sig2 = 0.5)
+sum(pcost_day(bestp))
+bestss <- c(kform = as.numeric(df_to_use[bestssr,1]),
+           CLp = as.numeric(df_to_use[bestssr,2]),
+           CLrapid = as.numeric(df_to_use[bestssr,3]),
+           sig2 = 0.5)
+sum(pcost_day(bestss))
+best_for_amend <- c(kform = as.numeric(df_to_use[bestssa,1]),
+           CLp = as.numeric(df_to_use[bestssa,2]),
+           CLrapid = as.numeric(df_to_use[bestssa,3]),
+           sig2 = 0.5)
+sum(pcost_day(best_for_amend))
+auc_choice <- c(kform = as.numeric(df_to_use[i_med,1]),
+              CLp = as.numeric(df_to_use[i_med,2]),
+              CLrapid = as.numeric(df_to_use[i_med,3]),
+              sig2 = 0.5)
+sum(pcost_day(auc_choice))
+day_mcmc.fun(bestp)
+day_mcmc.fun(bestss)
+day_mcmc.fun(auc_choice)
+
+Pfit_auc1 <- modFit(pcost_day, auc_choice, method="Marq", lower = parRanges$min, upper = parRanges$max)
+Pfit_auc2 <- modFit(pcost_day, Pfit_auc1$par, method="bobyqa", lower = parRanges$min, upper = parRanges$max)
+Pfit_auc3 <- modFit(pcost_day, Pfit_auc2$par, method="Nelder-Mead", lower = parRanges$min, upper = parRanges$max)
+
+Pfit_auc1$par
+Pfit_auc1$ssr
+Pfit_auc2$par
+Pfit_auc3$ssr
+Pfit_auc3$par
+
+Pfit_auc3$ssr
+
+bestres <- Pred_sim_day(bestp[1:4])
+bestp
+pcost(bestp)
+bestols <- Pred_sim_day(bestss[1:4])
+bestss
+pcost(bestss)
+auc_fit <- Pred_sim_day(Pfit_auc3$par)
+Pfit_auc3$par
+pcost(Pfit_auc3$par)
+best_for_amend
+sum(pcost_day_amend(best_for_amend))
+bestam <- Pred_sim_day(best_for_amend[1:4])
+
+ddd <- tibble()
+ddd <- bind_rows(bestp[1:4], bestss[1:4], Pfit_auc3$par[1:4], best_for_amend[1:4])
+
+if(var_alc==1) {
+  subt <- "daily EtOH pars"
+} else {
+  subt <- "median EtOH pars"
+}
+
+ggplot() + 
+  geom_point(aes(x=times, y=BrAC_mM), data=alc) +
+  geom_line(aes(x=time, y=Central), data=auc_fit) +
+  ggtitle(paste0(id[idx], " day ", day, " ", mname, "based on global SA"))
+
+
+ggplot() +
+  geom_point(aes(x=time, y=p181), data=obs_real) +
+  geom_line(aes(x=time, y=p181), data=obs_real) +
+  geom_point(aes(x=time, y=Pconc2*701.7), data=amend, color="darkolivegreen", alpha=0.5) +
+  geom_line(aes(x=time, y=Pconc2*701.7), data=amend, color="darkolivegreen", linetype=2, alpha=0.5) +
+  geom_line(aes(x=time, y=Pconc*701.7), data=auc_fit, color="blue") +
+  geom_line(aes(x=time, y=Pconc*701.7), data=bestres, color="darkorchid") +
+  geom_line(aes(x=time, y=Pconc*701.7), data=bestols, color="green") +
+  geom_line(aes(x=time, y=Pconc*701.7), data=bestam, color="deeppink4") +
+  scale_x_continuous("time (hr)", limits=c(t_start, t_end), breaks = c(t_start, t_start+2, t_end)) +
+  scale_y_log10("PEth 16:0/18:1 (ng/ml)") +
+  ggtitle(paste0(id[idx], mname, ", day ", day, " based on global SA")) +
+   labs(subtitle = subt, caption="black: data @ 0, 2 24 hr;    violet: AUC match:    blue; Nelder-Mead from AUC match;\n red = quad approx from AUC match;    pink = AUC match amended data")
+```

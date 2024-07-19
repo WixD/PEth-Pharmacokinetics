@@ -1,0 +1,541 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+posterior predictions Aim2
+
+```{r}
+library(mrgsolve)
+library(magrittr)    # The pipe, %>%
+library(tidyverse)
+library(ggthemes)
+library(brms)
+library(fitdistrplus)
+library(EnvStats)
+library(pracma)
+library(tmvtnorm)
+library(rethinking)
+library(MASS)
+library(FME)
+library(readxl)
+library(patchwork)
+library(gridExtra)
+```
+
+```{r}
+Pmod <- mread("../Pcode1switch.cpp")
+mname <- "Model 1pref"
+
+p181_cmb_mod <- readRDS("p181_cmb_mod_2Mnew.Rds")
+#p182_cmb_mod <- readRDS("p182_cmb_mod_1Mnew.Rds")
+#p204_cmb_mod <- readRDS("p204_cmb_mod_1Mnew.Rds")
+
+pred_aim2_pars181 <- posterior_predict(p181_cmb_mod)
+
+# simulation without individual SD
+# individual fits
+Pred_day <- function(pars) {
+  out<- Pmod %>% param(pars) %>% data_set(d_obs) %>% idata_set(indiv_dat) %>%
+    mrgsim_df(start=0, end = 24, delta=24, add = 2,
+           atol=1e-30, mxhnil=0, hmin=1e-20, maxsteps=200000)
+  out[2:nrow(out),]
+}
+
+Sim_day <- function(pars) {
+  out<- Pmod %>% param(pars) %>% data_set(d_obs) %>% idata_set(indiv_dat) %>%
+    mrgsim_df(start=0, end = 24, delta=0.25, 
+           atol=1e-30, mxhnil=0, hmin=1e-20, maxsteps=200000)
+  out[2:nrow(out),]
+}
+
+apply_Sim_day <- function(pars) {
+   dplyr::rename(pars) <- c(kform ="mu_kform", CLp ="mu_CLp", CLrapid = "mu_CLrapid")
+  out<- Pmod %>% param(pars) %>% data_set(d_obs) %>% idata_set(indiv_dat) %>%
+    mrgsim_df(start=0, end = 24, delta=0.25, 
+           atol=1e-30, mxhnil=0, hmin=1e-20, maxsteps=100000)
+  out[2:nrow(out),]$Pconc
+}
+
+mCovar_cal181 <- matrix(data = c(3.6923, 1.705, 1.2664,
+                               1.705, 4.7846, -1.7833,
+                               1.2664, -1.7833, 6.12345),
+                  nrow=3, ncol=3, byrow=TRUE)
+
+mCovar_cal182 <- matrix(data = c(4.0625, 2.7589, 1.12377,
+                                 2.5789, 11.2902, -1.6991,
+                                 1.12377, -1.6991, 2.40735),
+                  nrow=3, ncol=3, byrow=TRUE)
+
+mCovar_cal204 <- matrix(data = c(3.1930, 1.2598, 0.2790,
+                                 1.2598, 8.5655, -3.9520,
+                                 0.2790, -3.9520, 4.7863),
+                        nrow=3, ncol=3, byrow=TRUE)
+
+```
+
+get data
+
+```{r}
+# #  2001 = 1086 [2]; 2003 = 1073 [4];  2009 = h1194(14) [7];  2012 = h1116(25) [9]; 2016 = h1074(3) [12]; 2019 = h1081(5)[13]; 2030 = h1110(23) [16];
+########
+idx <- 17
+##########
+id <- c("sid2000", "sid2001", "sid2002", "sid2003", "sid2006", "sid2008", "sid2009",
+   "sid2010", "sid2012", "sid2013", "sid2015", "sid2016", "sid2019",
+   "sid2023", "sid2025", "sid2030", "sid2032")
+idnum <- strtoi(substring(id[idx],4))
+print(idnum)
+
+alcpardat <- read_csv(paste0("../../alc_pars/Et_pars", idnum,"b.csv"))
+
+obs <- read_xlsx("../../New_data-051222.xlsx", sheet=id[idx], col_types=c(rep("text",2), rep("numeric",7), 
+                                                                  "text", "numeric", "text", rep("numeric",11) ),
+                 na="NA")[1:40,c(4,21:23)]
+
+
+day6_p181 <- c(0.11470555,	0.06483971,	0.07423016,	0.10847448,	0.16253447,	0.18256664,	0.17256997,
+             0.1533222,	0.12728686,	0.06864454,	0.08065664,	0.06761219,	0.17994102,	0.07107497,
+             0.15963303,	0.05414403,	0.15378599)
+day6_p182 <- c(0.13197681,	0.0921988,	0.07708089,	0.24322005,	0.17522809,	0.24988296,	NA,	
+               0.31447657,	0.10310905,	0.10391202,	0.07038866,	0.09796807,	0.28923139,	0.07535661,
+               0.11097531,	0.08026783,	0.212616377)
+day6_p204 <- c(0.02675,	NA,	0.0385,	0.035408319,	0.01672,	0.08125,	NA,
+               0.33025,	0.015658821,	0.01675418,	NA,	NA,	0.069825,	0.146379715,
+               0.02465,	0.014964765,	0.0796)
+obs_add <- data.frame(times=120, Mp181=day6_p181[idx], Mp182=day6_p182[idx], Mp204=day6_p204[idx])
+obs <- bind_rows(obs, obs_add)
+
+indiv_dat <- read.csv("../../alc_pars/EtOH_jan23_Mod2b_idata.csv")[idx,]
+
+
+dosing <- indiv_dat$WT[1]*indiv_dat$dose[1]*1000/46.07 # dose in mmol alcohol
+d_obs <- tibble(ID=indiv_dat$ID, time=0, cmt=1, evid=1, 
+                    amt=dosing, addl=4, ii=24, rate=dosing/0.25)
+
+
+
+```
+
+p181 setup
+
+```{r}
+
+fname <- paste0("../PEth_pars_M1/P181_pars_",idnum,"_M1p.csv")
+Ppardat181 <- read_csv(fname)[,2:4]
+
+cent_par181 <- apply(Ppardat181, 2, mean, na.rm=T)
+sd_par181 <- apply(Ppardat181, 2, sd, na.rm=T)
+
+med_cal181 <- tibble(kform = c(cent_par181[1], sd_par181[1]),
+                          CLp = c(cent_par181[2], sd_par181[2]),
+                          CLrapid = c(cent_par181[3], sd_par181[3]) )
+row.names(med_cal181) <- c("mu", "sigma")
+
+cal_Z181 <- as.tibble(matrix(5,3))
+#names(cal_pctl181) <- c("%kform", "%CLp", "%CLrapid")
+for (i in 1:5) {
+  if (is.na(Ppardat181[i,1])) {
+    cal_Z181[i,] <- c(NA, NA, NA) 
+  } else {
+    cal_Z181[i,1] <- as.numeric((Ppardat181[i,1] - cent_par181[1]) / sd_par181[1])
+    cal_Z181[i,2] <- as.numeric((Ppardat181[i,2] - cent_par181[2]) / sd_par181[2])
+    cal_Z181[i,3] <- as.numeric((Ppardat181[i,3] - cent_par181[3]) / sd_par181[3])
+  }
+}
+names(cal_Z181) <- c("Z_kf", "Z_clp", "Z_clr")
+
+
+P181_cal_pars <- read_xlsx("pars_regress_data-070323.xlsx", sheet="p181",
+                           col_types = c("numeric", "text", rep("numeric",5), "text", "numeric",
+                                      rep("text",4), rep("numeric",11))) |>
+  dplyr::filter(sid==idnum) 
+
+indiv_dat <- read.csv("../../alc_pars/EtOH_jan23_Mod2b_idata.csv")[idx,]
+CLterm181 <- c(-5.413968, -5.544202, -5.530531, -5.70707, -6.307863, -5.4325,
+           -6.101422, -5.200162, -5.739369, -5.90014, -5.835507, -5.582476,
+           -6.657425, -6.016103, -5.231312, -5.370929, -5.535139)
+indiv_dat$CLterm <- CLterm181[idx]
+
+LL_mcmc.fun <- function(pars) {
+  yhat <- cent_par181
+  y <- as.numeric(pars[1,])
+  sig <- as.numeric(pars[2,])
+  log_likelihood <- -2*sum((dnorm(y, mean=yhat, sd = sig, log=TRUE)))
+  return(log_likelihood)
+}
+
+
+
+m_mu_kform181 <- median(pred_aim2_pars181[,idx,1])
+m_mu_CLp181 <- median(pred_aim2_pars181[,idx,3])
+m_mu_CLrapid181 <- median(pred_aim2_pars181[,idx,5])
+
+msig_kform181 <- median(pred_aim2_pars181[,idx,2])
+msig_CLp181 <- median(pred_aim2_pars181[,idx,4])
+msig_CLrapid181 <- median(pred_aim2_pars181[,idx,6])
+
+med_prm181 <- data.frame(kform = c(m_mu_kform181, msig_kform181),
+                          CLp = c(m_mu_CLp181, msig_CLp181),
+                          CLrapid = c(m_mu_CLrapid181, msig_CLrapid181) )
+row.names(med_prm181) <- c("mu", "sigma")
+
+
+Zpar181 <- as.tibble(matrix(NA, nrow=5, ncol=3))
+pred_med181 <- as.tibble(matrix(NA, nrow=5, ncol=3))
+names(pred_med181) <- c("kform", "CLp", "CLrapid")
+for (day in 1:5) {
+  if (is.na(cal_Z181[day,1])) { 
+    Zpar181[day,1:3] <- c(NA, NA, NA)
+    pred_med181[day,1:3] <- c(NA, NA, NA)
+  } else {
+      Zpar181[day,1] <- (Ppardat181[day,1] - m_mu_kform181) / msig_kform181
+      pred_med181[day,1] <- m_mu_kform181[1] + Zpar181[day,1] * msig_kform181
+      Zpar181[day,2] <- (Ppardat181[day,2] - m_mu_CLp181) / msig_CLp181
+      pred_med181[day,2] <- m_mu_CLp181 + Zpar181[day,2] * msig_CLp181
+      Zpar181[day,3] <- (Ppardat181[day,3] - m_mu_CLrapid181) / msig_CLrapid181
+      pred_med181[day,3] <- m_mu_CLrapid181 + Zpar181[day,3] * msig_CLrapid181
+    }
+}
+names(Zpar181) <- c("Z_kf", "Z_clp", "Z_clr")
+
+
+id[idx]
+
+
+```
+
+p181 pct plots
+
+```{r}
+library(Hmisc)
+
+cal_pcts181 <- 82*apply(cal_Z181, 2, pnorm)
+reg_pcts181 <- 82*apply(Zpar181, 2, pnorm)
+
+d_coord <- c(-1,-2,-3,-4,-5)
+index <- which(is.na(cal_pcts181[,1]))
+if (length(index)==0) { 
+   kf_CI181 <- as.tibble(binconf(x=cal_pcts181[,1], n=82, alpha=0.05 )) |>
+    bind_cols(d=d_coord)
+  kf_CIreg181 <- as.tibble(binconf(x=reg_pcts181[,1], n=82, alpha=0.05 )) |>
+    bind_cols(d=d_coord)
+  clp_CI181 <- as.tibble(binconf(x=cal_pcts181[,2], n=82, alpha=0.05 ))|>
+    bind_cols(d=d_coord)
+  clp_CIreg181 <- as.tibble(binconf(x=reg_pcts181[,2], n=82, alpha=0.05 ))|>
+    bind_cols(d=d_coord)
+  clr_CI181 <- as.tibble(binconf(x=cal_pcts181[,3], n=82, alpha=0.05 ))|>
+    bind_cols(d=d_coord)
+  clr_CIreg181 <- as.tibble(binconf(x=reg_pcts181[,3], n=82, alpha=0.05 ))|>
+    bind_cols(d=d_coord)
+  } else {
+    kf_CI181 <- as.tibble(binconf(x=cal_pcts181[-index,1], n=82, alpha=0.05 )) |>
+      bind_cols(d=d_coord[-index])
+    kf_CIreg181 <- as.tibble(binconf(x=reg_pcts181[-index,1], n=82, alpha=0.05 )) |>
+      bind_cols(d=d_coord[-index])
+    clp_CI181 <- as.tibble(binconf(x=cal_pcts181[-index,2], n=82, alpha=0.05 ))|>
+      bind_cols(d=d_coord[-index])
+    clp_CIreg181 <- as.tibble(binconf(x=reg_pcts181[-index,2], n=82, alpha=0.05 ))|>
+      bind_cols(d=d_coord[-index])
+    clr_CI181 <- as.tibble(binconf(x=cal_pcts181[-index,3], n=82, alpha=0.05 ))|>
+      bind_cols(d=d_coord[-index])
+    clr_CIreg181 <- as.tibble(binconf(x=reg_pcts181[-index,3], n=82, alpha=0.05 ))|>
+      bind_cols(d=d_coord[-index])
+  }
+
+
+
+kf_pct_plot181 <- ggplot() +
+  scale_x_continuous("\nquantile", limits=c(0,1)) +
+  scale_y_continuous("day\n", limits=c(-5.5,-0.5), breaks=c(-5,-4,-3,-2,-1), labels=c("5","4","3","2", "1")) +
+  labs(subtitle = "kform ") +
+  theme_economist_white(gray_bg = F) +
+  theme(axis.text.x = element_text(size=20), axis.text.y = element_text(size=16), 
+        axis.title.x = element_text(size=20), axis.title.y = element_text(size=20),
+        plot.subtitle = element_text(size=20), 
+        panel.grid = element_line(linewidth=0.3, color="gray90", linetype="dotted"))
+
+for (day in 1:5) {
+  kf_pct_plot181 <- kf_pct_plot181 +
+    geom_point(aes(y=d, x=PointEst), data=kf_CI181[day,], shape=15, size=4) +
+    geom_errorbar(aes(y=d, xmin=Lower, xmax=Upper), data=kf_CI181[day,], width=0, linewidth=1.2) +
+    geom_point(aes(y=d, x=PointEst), data=kf_CIreg181[day,], color="tomato", shape=16, size=4) +
+    geom_errorbar(aes(y=d, xmin=Lower, xmax=Upper), data=kf_CIreg181[day,], color="tomato", width=0, linewidth=1)
+}
+
+print(kf_pct_plot181)
+
+clp_pct_plot181 <- ggplot() +
+  scale_x_continuous("\nquantile", limits=c(0,1)) +
+  scale_y_continuous("day\n", limits=c(-5.5,-0.5), breaks=c(-5,-4,-3,-2,-1), labels=c("5","4","3","2", "1")) +
+  labs(subtitle = "CLp ") +
+  theme_economist_white(gray_bg = F) +
+  theme(axis.text.x = element_text(size=20), axis.text.y = element_text(size=16), 
+        axis.title.x = element_text(size=20), axis.title.y = element_text(size=20),
+        plot.subtitle = element_text(size=20), 
+        panel.grid = element_line(linewidth=0.3, color="gray90", linetype="dotted"))
+
+for (day in 1:5) {
+  clp_pct_plot181 <- clp_pct_plot181 +
+    geom_point(aes(y=d, x=PointEst), data=clp_CI181[day,], shape=15, size=4) + 
+    geom_errorbar(aes(y=d, xmin=Lower, xmax=Upper), data=clp_CI181[day,], width=0, linewidth=1.2) +
+    geom_point(aes(y=d, x=PointEst), data=clp_CIreg181[day,], color="tomato", shape=16, size=4) +
+    geom_errorbar(aes(y=d, xmin=Lower, xmax=Upper), data=clp_CIreg181[day,], color="tomato", width=0, linewidth=1)
+}
+
+print(clp_pct_plot181)
+
+clr_pct_plot181 <- ggplot() +
+  scale_x_continuous("\nquantile", limits=c(0,1)) +
+  scale_y_continuous("day\n", limits=c(-5.5,-0.5), breaks=c(-5,-4,-3,-2,-1), labels=c("5","4","3","2", "1")) +
+  labs(subtitle = "CLrapid ") +
+  theme_economist_white(gray_bg = F) +
+  theme(axis.text.x = element_text(size=20), axis.text.y = element_text(size=16), 
+        axis.title.x = element_text(size=20), axis.title.y = element_text(size=20),
+        plot.subtitle = element_text(size=20), 
+        panel.grid = element_line(linewidth=0.3, color="gray90", linetype="dotted"))
+
+for (day in 1:5) {
+  clr_pct_plot181 <- clr_pct_plot181 +
+    geom_point(aes(y=d, x=PointEst), data=clr_CI181[day,], shape=15, size=4) + 
+    geom_errorbar(aes(y=d, xmin=Lower, xmax=Upper), data=clr_CI181[day,], width=0, linewidth=1.2) +
+    geom_point(aes(y=d, x=PointEst), data=clr_CIreg181[day,], color="tomato", shape=16, size=4) +
+    geom_errorbar(aes(y=d, xmin=Lower, xmax=Upper), data=clr_CIreg181[day,], color="tomato",
+                  width=0, linewidth=1)
+}
+
+print(clr_pct_plot181)
+
+
+
+
+```
+
+range finder p181
+
+```{r}
+rangelim <- 0.99
+sdlim <- 3
+
+lim_kform181 <- HPDI(pred_aim2_pars181[,idx,1], prob=rangelim)
+lim_CLp181 <- HPDI(pred_aim2_pars181[,idx,3], prob=rangelim)
+lim_CLrapid181 <- HPDI(pred_aim2_pars181[,idx,5], prob=rangelim)
+
+hi_kform181 <- lim_kform181[2]
+lo_kform181<- lim_kform181[1]
+hi_CLp181 <- lim_CLp181[2]
+lo_CLp181 <- lim_CLp181[1]
+hi_CLrapid181 <- lim_CLrapid181[2]
+lo_CLrapid181 <- lim_CLrapid181[1]
+
+pRange181 <- data.frame(min=c(lo_kform181, lo_CLp181, lo_CLrapid181),
+                     max=c(hi_kform181, hi_CLp181, hi_CLrapid181))
+row.names(pRange181) <- c("kform", "CLp", "CLrapid")
+
+pRange181
+
+
+ix <- c(1,9,17,25,33)
+indiv_dat <- read.csv("../../alc_pars/EtOH_jan23_Mod2b_idata.csv")[idx,]
+indiv_dat$Pstart <- median(obs$Mp181[ix])
+
+senspars181 <- c(kform = med_prm181[1,1], 
+                 CLp = med_prm181[1,2], 
+                 CLrapid = med_prm181[1,3] )
+
+
+altRange181 <- data.frame(min = c(m_mu_kform181 - sdlim * msig_kform181,
+                                    m_mu_CLp181 - sdlim * msig_CLp181,
+                                    m_mu_CLrapid181 - sdlim * msig_CLrapid181),
+                           max = c(m_mu_kform181 + sdlim * msig_kform181,
+                                   m_mu_CLp181 + sdlim * msig_CLp181,
+                                    m_mu_CLrapid181 + sdlim * msig_CLrapid181)
+)
+row.names(altRange181) <- c("kform", "CLp", "CLrapid")
+
+
+sR_test181 <- sensRange(func=Sim_day,  parms=senspars181, sensvar="Pconc", dist="norm",
+                        parRange=altRange181, parMean=senspars181, parCovar=mCovar_cal181, num=300)
+
+q_max181 <- apply(sR_test181[,4:100], 2, max)
+max(q_max181*701.7)
+
+pRange181
+altRange181
+```
+
+p181 plot
+
+```{r}
+P181_reg_pars <- read_xlsx("PEth_par_reg_results-072223.xlsx", sheet = "p181_pars",
+                            col_types = c("numeric", "text", rep("numeric",5), "text", "numeric",
+                                      rep("text",4), rep("numeric",6))) |>
+  dplyr::filter(sid==idnum)
+
+
+
+nsim <- 10000
+## here needto use senspars as mean and max lik sds 
+
+
+
+sR_aim2_p181 <- sensRange(func=Sim_day,  parms=senspars181, sensvar="Pconc", dist="norm",
+                          parRange=altRange181, parMean = senspars181, parCovar=mCovar_cal181,
+                          num=nsim)
+sR_p181_summ <- summary(sR_aim2_p181)
+
+q_med <- as.numeric(apply(sR_aim2_p181[,4:100], 2, median))
+q_99 <- apply(sR_aim2_p181[,4:100], 2, quantile, prob=c(0.005, 0.995))
+q_95 <- apply(sR_aim2_p181[,4:100], 2, quantile, prob=c(0.025,0.975))
+q_50 <- apply(sR_aim2_p181[,4:100], 2, quantile, prob=c(0.25,0.75))
+
+d_cost <- function(par, day) {
+  if (day==1) obsP <- obs$Mp181[c(1,7,9)]
+  if (day==2) obsP <- obs$Mp181[c(9,15,17)]
+  if (day==3) obsP <- obs$Mp181[c(17,23,25)]
+  if (day==4) obsP <- obs$Mp181[c(25,31,33)]
+  if (day==5) obsP <- obs$Mp181[c(33,39,41)]
+  #names(par) <- c("kform", "CLp", "CLrapid")
+  mdl <- Pred_day(par)$Pconc
+  cost <- (((-log(obsP)) - (-log(mdl)))^2)
+  return(sum(cost))
+}
+indiv_dat <- read.csv("../../alc_pars/EtOH_jan23_Mod2b_idata.csv")[idx,]
+ix <- c(1,9,17,25,33)
+CLterm181 <- c(-5.413968, -5.544202, -5.530531, -5.70707, -6.307863, -5.4325,
+           -6.101422, -5.200162, -5.739369, -5.90014, -5.835507, -5.582476,
+           -6.657425, -6.016103, -5.231312, -5.370929, -5.535139)
+indiv_dat$CLterm <- CLterm181[idx]
+#day <- 1
+#sR_cost <- matrix(nrow=10000, ncol=5)
+#bests <- integer(length=5)
+#for (day in 1:5) {
+#  indiv_dat$Pstart <- obs$Mp181[ix[day]]
+  #for (i in 1:10000) {
+ #   sR_cost[i,day] <- d_cost(sR_aim2_p181[i,1:3], day)
+ #   bests[day] <- which.min(sR_cost[,day])
+#  }
+#}
+#Ppar_sR181 <- bind_rows(sR_aim2_p181[bests,1:3])
+
+
+indiv_dat <- read.csv("../../alc_pars/EtOH_jan23_Mod2b_idata.csv")[idx,]
+CLterm181 <- c(-5.413968, -5.544202, -5.530531, -5.70707, -6.307863, -5.4325,
+           -6.101422, -5.200162, -5.739369, -5.90014, -5.835507, -5.582476,
+           -6.657425, -6.016103, -5.231312, -5.370929, -5.535139)
+
+indiv_dat$CLterm <- CLterm181[idx]
+indiv_dat$Pstart <- median(obs$Mp181[ix])
+
+parmed <- Sim_day(senspars181)$Pconc
+sR_df181 <- tibble(time=seq(0,24, 0.25), qmed=q_med, p01=q_99[1,], p99=q_99[2,], 
+                   p05=q_95[1,], p95=q_95[2,], p25=q_50[1,], p75=q_50[2,])
+
+
+
+#prm_q <- data.frame(p1=rep(0,3), p2=rep(0,3), p3=rep(0,3))
+#reg_prm <- data.frame(kform = rep(0,3), CLp= rep(0,3), CLrapid=rep(0,3))
+#for (i in 1:5) {
+#  prm_q[i,1] <- (Ppardat181[i,1] - senspars181[1])/P181_cal_pars$sig_kform
+#  prm_q[i,2] <- (Ppardat181[i,2] - senspars181[2])/P181_cal_pars$sig_CLp
+#  prm_q[i,3] <- (Ppardat181[i,3] - senspars181[3])/P181_cal_pars$sig_CLrapid
+#  reg_prm[i,1] <- senspars181[1] + prm_q[i,1] * msig_kform181
+#  reg_prm[i,2] <- senspars181[2] + prm_q[i,2] * msig_CLp181
+#  reg_prm[i,3] <- senspars181[3] + prm_q[i,2] * msig_CLrapid181
+#}
+
+
+ddf181 <- tibble(time = seq(0,24,0.25))
+
+
+
+for (j in 1:5) {
+  if ( is.na(Ppardat181[j,1])) { 
+      cPEth <- rep(NA,97)
+      rPEth <- rep(NA,97)
+    } else {
+      indiv_dat$ke <- alcpardat$ke[j]
+      indiv_dat$ks <- alcpardat$ks[j]
+      indiv_dat$ka <- alcpardat$ka[j]
+      indiv_dat$Vmax <- alcpardat$Vmax[j]
+      indiv_dat$Km <- alcpardat$Km[j]
+      indiv_dat$CLd <- alcpardat$CLd[j]
+      indiv_dat$Vcent <- alcpardat$Vcent[j]
+      indiv_dat$Vtissue <- alcpardat$Vtissue[j]
+        indiv_dat$Pstart <- obs$Mp181[ix[j]] 
+      cal_dprms <- Ppardat181[j,]
+    }
+    cPEth <- Sim_day(Ppardat181[j,])$Pconc
+    ddf181 <- bind_cols(ddf181,cPEth)
+    
+}
+colnames(ddf181) <- c("time", "cd1",  "cd2",  "cd3",  "cd4",  "cd5")
+
+ obsP1 <- obs[c(1,7,9),]
+ obsP2 <- obs[c(9,15,17),]
+ obsP3 <- obs[c(17,23,25),]
+ obsP4 <- obs[c(25,31,33),]
+ obsP5 <- obs[c(33,39,41),]
+
+
+max(sR_df181$p99[1:25]*701.7)
+min(sR_df181$p01[1:25]*701.7)
+max(sR_df181$p95[1:25]*701.7)
+min(sR_df181$p05[1:25]*701.7)
+
+
+reg_plot181 <- ggplot() +
+   #geom_ribbon(aes(x=time, ymin=p01*701.7, ymax=p99*701.7), data=sR_df181, color="yellow1", fill="yellow1", alpha=0.35, linewidth=0.1) +
+  geom_ribbon(aes(x=time, ymin=p05*701.7, ymax=p95*701.7), data=sR_df181, color="darkolivegreen3", fill="darkolivegreen3", alpha=0.3, linewidth=0.1) +
+  geom_ribbon(aes(x=time, ymin=p25*701.7, ymax=p75*701.7), data=sR_df181, color="lightsteelblue3", fill="lightsteelblue3", alpha=0.35, linewidth=0.1) +
+  geom_line(aes(x=time, y=qmed*701.7), data=sR_df181, linewidth=0.3) +
+  #geom_line(aes(x=time, y=oldmed*701.7), data=sR_df181, linewidth=0.3, linetype=2) +
+  geom_line(aes(x=time, y=cd1*701.7), data=ddf181, color="tomato",  linewidth=1.2, linetype=2) +
+   annotate("text", x= 18, y= ddf181$cd1[73]*701.7, label="1", size=6) +
+  geom_line(aes(x=time, y=cd2*701.7), data=ddf181, color="tomato",  linewidth=1.2, linetype=2) +
+   annotate("text", x= 19, y= ddf181$cd2[77]*701.7, label="2", size=6) +
+  geom_line(aes(x=time, y=cd3*701.7), data=ddf181, color="tomato",  linewidth=1.2, linetype=2) +
+   annotate("text", x= 20, y= ddf181$cd3[81]*701.7, label="3", size=6) +
+  geom_line(aes(x=time, y=cd4*701.7), data=ddf181, color="tomato",  linewidth=1.2, linetype=2) +
+   annotate("text", x= 21, y= ddf181$cd4[85]*701.7, label="4", size=6) +
+  geom_line(aes(x=time, y=cd5*701.7), data=ddf181, color="tomato",  linewidth=1.2, linetype=2) +
+   annotate("text", x= 22, y= ddf181$cd5[89]*701.7, label="5", size=6) +
+  geom_point(aes(x=times, y=Mp181*701.7), data=obsP1, color="tomato", 
+             shape=17, size=3) +
+  geom_point(aes(x=times-24, y=Mp181*701.7), data=obsP2, color="tomato", 
+             shape=17, size=3) +
+  geom_point(aes(x=times-48, y=Mp181*701.7), data=obsP3, color="tomato", 
+             shape=17, size=3) +
+  geom_point(aes(x=times-72, y=Mp181*701.7), data=obsP4, color="tomato", 
+             shape=17, size=3) +
+  geom_point(aes(x=times-96, y=Mp181*701.7), data=obsP5, color="tomato", 
+             shape=17, size=3) +
+   scale_x_continuous("\ntime (hr)", limits=c(0,24), breaks=c(0,6,12,18,24)) +
+  scale_y_log10("PEth 16:0/18:1 (ng/ml)\n") +
+  coord_cartesian(ylim = c(3,10000)) +
+  labs(subtitle = id[idx]) +
+  theme_economist_white(gray_bg=F) +
+  theme(axis.text.x = element_text(size=20), axis.text.y = element_text(size=20),
+         axis.title.x = element_text(size=20), axis.title.y = element_text(size=20),
+        plot.subtitle = element_text(size=20))
+
+
+print(reg_plot181)
+
+```
+
+print composite plot
+
+```{r}
+#library(patchwork)
+
+
+#single_plot181 <- reg_plot181 
+#fname <- paste0("reg-prm-pred-plots/single-jun24-", id[idx], "p181_pred.pdf")
+
+#pdf(file=fname, width=12, height=8)
+#print(predplot181) 
+#dev.off()
+```
+#predplot181 <-  (reg_plot181 | (kf_pct_plot181 / clp_pct_plot181 / clr_pct_plot181)) +
+#  plot_layout(ncol= 2, widths=c(4,2,2,2), heights = c(4,1.33,1.33,1.33))
